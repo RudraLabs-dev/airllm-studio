@@ -153,24 +153,10 @@ def test_load_image():
         load_image(b"not an image")
 
 
-# --- request guard -------------------------------------------------------------------------
-def test_cross_site_writes_are_refused(client):
+# --- request guard (security.py, tested in test_security.py) covers the new endpoints -------
+def test_project_endpoints_refuse_cross_site_writes(client):
     evil = {"Origin": "https://evil.example"}
-    assert client.post("/api/pull", json={"model": "a/b"}, headers=evil).status_code == 403
     assert client.post("/api/studio/projects", json={"name": "x"}, headers=evil).status_code == 403
-    same = {"Origin": "http://testserver"}
-    assert client.post("/api/studio/projects", json={"name": "x"}, headers=same).status_code == 200
-    assert client.post("/api/studio/projects", json={"name": "y"}).status_code == 200      # CLI/SDKs
-    assert client.get("/api/tags", headers=evil).status_code == 200                       # reads: CORS
-
-
-def test_dns_rebinding_host_is_refused(studio):
-    from fastapi.testclient import TestClient
-
-    from airllm_studio.server import create_app
-
-    app = create_app(studio, keepalive=False)
-    local = TestClient(app, base_url="http://127.0.0.1:11435", client=("127.0.0.1", 50000))
-    assert local.get("/api/tags").status_code == 200
-    assert local.get("/api/tags", headers={"Host": "localhost:11435"}).status_code == 200
-    assert local.get("/api/tags", headers={"Host": "attacker.example:11435"}).status_code == 403
+    p = client.post("/api/studio/projects", json={"name": "y"}).json()           # CLI/SDKs: no Origin
+    upload = client.post(f"/api/studio/projects/{p['id']}/files?name=a.txt", content=b"hi", headers=evil)
+    assert upload.status_code == 403

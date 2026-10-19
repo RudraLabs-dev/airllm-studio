@@ -5,7 +5,8 @@ Environment variables (all optional):
   AIRLLM_MODELS   models directory, overrides the setting                       default: $AIRLLM_HOME/models
   AIRLLM_HOST     address to serve on / talk to, "host", "host:port" or URL      default: 127.0.0.1:11435
   AIRLLM_API_KEY  if set, non-local clients must send "Authorization: Bearer <key>"
-  AIRLLM_ORIGINS  extra comma-separated CORS origins allowed to call the API
+  AIRLLM_ORIGINS  extra comma-separated browser origins allowed to call the API (see security.py)
+  AIRLLM_ALLOWED_HOSTS  extra comma-separated host names the server may be reached by
   HF_TOKEN        Hugging Face token (the setting in the app takes precedence)
 """
 from __future__ import annotations

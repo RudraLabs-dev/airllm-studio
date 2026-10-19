@@ -10,10 +10,11 @@ import queue
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Iterator
 
 from .config import SettingsStore
-from .store import Manifest, ModelStore
+from .store import Manifest, ModelStore, RemoteCodeRequired, check_remote_code
 
 log = logging.getLogger("airllm_studio.engine")
 
@@ -118,6 +119,11 @@ class Engine:
         if self.model is not None and self.model_name == name:
             return
         manifest = self._manifest(name)
+        if manifest.snapshot_path:
+            try:
+                check_remote_code(Path(manifest.snapshot_path), manifest.name, manifest.trust_remote_code)
+            except RemoteCodeRequired as exc:      # e.g. a model pulled before this check existed
+                raise EngineError(str(exc)) from None
         self._unload()
         self.state = "loading"
         try:
@@ -281,10 +287,12 @@ class Engine:
         if self._processor is None:
             from transformers import AutoProcessor
 
-            path = self._manifest_loaded.snapshot_path if self._manifest_loaded else None
-            if not path:
+            manifest = self._manifest_loaded
+            if manifest is None or not manifest.snapshot_path:
                 raise EngineError("This model has no processor for images or audio.")
-            self._processor = AutoProcessor.from_pretrained(path, trust_remote_code=True)
+            # Same opt-in as the model itself: a processor's own code runs only if the user allowed it.
+            self._processor = AutoProcessor.from_pretrained(
+                manifest.snapshot_path, trust_remote_code=bool(manifest.trust_remote_code))
         return self._processor
 
     def _multimodal_inputs(self, messages: list[dict], limit: int) -> dict:

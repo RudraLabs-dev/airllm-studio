@@ -38,8 +38,22 @@ cat /opt/airllm/share/airllm/BUILDINFO             # exact source commit, torch,
 ```
 
 **As a server.** `sudo systemctl enable --now airllm` runs the API and web UI as a hardened system service
-(data in `/var/lib/airllm-server`). To reach it from other machines, `sudo systemctl edit airllm` and set
-`Environment=AIRLLM_HOST=0.0.0.0:11435` and `Environment=AIRLLM_API_KEY=<secret>`.
+(data in `/var/lib/airllm-server`). To reach it from other machines, keep the API key in a root-only file
+(an `Environment=` line would show it to every local user through `systemctl show`):
+
+```sh
+sudo install -d -m 700 /etc/airllm
+echo "AIRLLM_API_KEY=$(openssl rand -hex 32)" | sudo tee /etc/airllm/server.env >/dev/null
+sudo chmod 600 /etc/airllm/server.env
+sudo systemctl edit airllm      # add under [Service]:
+                                #   Environment=AIRLLM_HOST=0.0.0.0:11435
+                                #   EnvironmentFile=/etc/airllm/server.env
+```
+
+Clients send `Authorization: Bearer <key>`. Reached by a name (e.g. `gpu-box.lan`) rather than an IP address?
+Add `Environment=AIRLLM_ALLOWED_HOSTS=gpu-box.lan`. Browser-based tools need their origin in `AIRLLM_ORIGINS`.
+Behind a reverse proxy on the same machine every client looks local and the key is not enforced, so
+authenticate in the proxy. Details: [studio/README.md](studio/README.md#security).
 
 **NVIDIA GPU.** The packages ship CPU-only PyTorch so they stay well under GitHub's 2 GiB asset limit.
 Switch to a CUDA build once after installing:

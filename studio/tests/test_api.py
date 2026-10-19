@@ -2,6 +2,8 @@ import json
 
 import pytest
 
+from conftest import BASE_URL
+
 
 def ndjson(resp):
     return [json.loads(line) for line in resp.text.splitlines() if line.strip()]
@@ -167,9 +169,9 @@ def test_api_key_blocks_remote_only(studio, monkeypatch):
     monkeypatch.setenv("AIRLLM_HOST", "0.0.0.0:11435")       # serving other machines, as documented
     studio.api_key = "s3cret"
     app = create_app(studio, keepalive=False)
-    local = TestClient(app)                                  # TestClient host counts as local
+    local = TestClient(app, base_url=BASE_URL)              # TestClient host counts as local
     assert local.get("/api/tags").status_code == 200
-    remote = TestClient(app, client=("203.0.113.9", 5000))
+    remote = TestClient(app, base_url=BASE_URL, client=("203.0.113.9", 5000))
     assert remote.get("/api/tags").status_code == 401
     assert remote.get("/api/tags", headers={"Authorization": "Bearer s3cret"}).status_code == 200
     # a valid key still cannot stop the server from another machine

@@ -152,7 +152,7 @@ def _run_with_tray(open_on_start: bool) -> int:
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     host, port = parse_host()
     studio = Studio()
-    server = uvicorn.Server(uvicorn.Config(create_app(studio), host=host, port=port, log_config=None,
+    server = uvicorn.Server(uvicorn.Config(create_app(studio, bind_host=host), host=host, port=port, log_config=None,
                                            access_log=False, timeout_graceful_shutdown=5))
     client = Client()
     url = client.url + "/"

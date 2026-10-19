@@ -53,9 +53,19 @@ audio in OpenAI `input_audio` parts (WAV) or a Studio `audio` list. `/api/chat` 
 To serve other machines set `AIRLLM_HOST=0.0.0.0:11435` and `AIRLLM_API_KEY=<secret>`; remote clients then send
 `Authorization: Bearer <secret>`. Settings, model shutdown and folder actions only work from the local machine.
 
-Browsers cannot drive the API from other web sites: write requests carrying a foreign `Origin` are refused
-(allow one with `AIRLLM_ORIGINS`), and a loopback-only server answers only to loopback host names, which blocks
-DNS-rebinding pages (`AIRLLM_ALLOWED_HOSTS` adds names).
+### Security
+
+* **Browsers.** Requests from this computer need no key, so the server refuses what a web page could send
+  through your browser: an `Origin` other than the Studio UI's own, `Sec-Fetch-Site: cross-site`, or a `Host`
+  name that is not loopback, an IP address or allowlisted (DNS rebinding). curl, the Ollama/OpenAI SDKs and the
+  `airllm` CLI send no `Origin` and are unaffected. To let a browser-based tool (e.g. Open WebUI calling from the
+  browser) use the API, list its origin in `AIRLLM_ORIGINS=http://localhost:3000`; to reach the server by a name
+  such as `gpu-box.lan`, list it in `AIRLLM_ALLOWED_HOSTS`.
+* **Model code.** Some Hugging Face repos ship Python code (`auto_map` in their config), which AirLLM would run.
+  Studio refuses such models unless you allow it per model: *Allow custom code* in the app,
+  `airllm pull <model> --trust-remote-code`, or `"trust_remote_code": true` in the pull request body.
+* **Reverse proxies.** Behind a proxy on the same machine every client looks local, so the API key is not
+  enforced. Put authentication in the proxy, or run the proxy on another host.
 
 ## How it runs models
 

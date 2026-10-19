@@ -2,7 +2,8 @@
 # Desktop users don't need it: the AirLLM app starts a personal server on demand.
 #
 #   sudo systemctl enable --now airllm
-#   sudo systemctl edit airllm      # e.g. Environment=AIRLLM_HOST=0.0.0.0:11435 and AIRLLM_API_KEY=...
+#   sudo systemctl edit airllm      # e.g. Environment=AIRLLM_HOST=0.0.0.0:11435
+#                                   #  and EnvironmentFile=/etc/airllm/server.env (root-only, holds AIRLLM_API_KEY)
 #
 # Models, settings and chats live in /var/lib/airllm-server (owned by a dynamic service user).
 [Unit]

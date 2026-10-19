@@ -15,7 +15,6 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator, Callable, Iterator
-from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,12 +27,12 @@ from .chats import UNSET, ChatStore, ProjectError, project_context
 from .config import SettingsStore, data_dir, logs_dir, parse_host
 from .engine import Engine, EngineError, GenOptions
 from .media import MediaError, parse_ollama_media, parse_openai_content
+from .security import allowed_host_names, api_key_matches, env_list, normalize_origin, request_allowed
 from .store import ModelStore, StoreError
 
 log = logging.getLogger("airllm_studio.server")
 WEB_DIR = Path(__file__).parent / "web"
 NS = 1_000_000_000
-LOOPBACK_NAMES = {"127.0.0.1", "localhost", "::1"}
 MAX_UPLOAD_BYTES = 2_000_000
 
 
@@ -170,8 +169,11 @@ class Studio:
         self.shutdown_hook: Callable[[], None] | None = None
 
 
-def create_app(studio: Studio | None = None, keepalive: bool = True) -> FastAPI:
+def create_app(studio: Studio | None = None, keepalive: bool = True, bind_host: str | None = None) -> FastAPI:
+    """bind_host: the host the server listens on (default from AIRLLM_HOST); a name given here is
+    accepted in the Host header in addition to loopback, IP addresses and AIRLLM_ALLOWED_HOSTS."""
     studio = studio or Studio()
+    allowed_hosts = allowed_host_names(bind_host if bind_host is not None else parse_host()[0])
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -191,36 +193,24 @@ def create_app(studio: Studio | None = None, keepalive: bool = True) -> FastAPI:
                   description="Ollama-compatible (/api) and OpenAI-compatible (/v1) API for AirLLM.")
     app.state.studio = studio
 
-    origins = [o.strip() for o in os.environ.get("AIRLLM_ORIGINS", "").split(",") if o.strip()]
+    origins = env_list("AIRLLM_ORIGINS")
+    extra_origins = frozenset(normalize_origin(o) for o in origins)
     if origins:
         app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["*"],
                            allow_headers=["*"], allow_credentials=False)
 
-    bind_host, _ = parse_host()
-    loopback_bind = bind_host in LOOPBACK_NAMES
-    trusted_hosts = LOOPBACK_NAMES | {h.strip().lower() for h in
-                                      os.environ.get("AIRLLM_ALLOWED_HOSTS", "").split(",") if h.strip()}
-
+    # Registered after CORS, so it runs first: nothing reaches a handler (or CORS) unchecked.
     @app.middleware("http")
     async def guard(request: Request, call_next):
         path = request.url.path
         protected = path.startswith(("/api", "/v1"))
-        test_client = request.client is not None and request.client.host == "testclient"
-        # DNS rebinding: a web page whose domain resolves to 127.0.0.1 would otherwise be "same
-        # origin" with this server. On a loopback-only server, only loopback host names are valid.
-        host_header = request.headers.get("host", "")
-        host = (urlsplit("//" + host_header).hostname or "").lower()
-        if loopback_bind and not test_client and host not in trusted_hosts:
-            return JSONResponse({"error": f"host '{host_header}' is not allowed"}, status_code=403)
-        # CSRF: browsers send Origin on cross-site requests; other clients (CLI, SDKs) send none.
-        origin = request.headers.get("origin")
-        if protected and origin and request.method not in ("GET", "HEAD", "OPTIONS"):
-            same = urlsplit(origin).netloc.lower() == host_header.lower()
-            if not same and origin not in origins:
-                return JSONResponse({"error": "cross-site requests are not allowed"}, status_code=403)
+        ok, status, message = request_allowed(request.headers, allowed_hosts, extra_origins, protected)
+        if not ok:
+            log.warning("refused %s %s: %s (Host=%s, Origin=%s)", request.method, path, message,
+                        request.headers.get("host"), request.headers.get("origin"))
+            return JSONResponse({"error": message}, status_code=status)
         if studio.api_key and protected and not _is_loopback(request):
-            header = request.headers.get("authorization", "")
-            if header != f"Bearer {studio.api_key}":
+            if not api_key_matches(request.headers.get("authorization", ""), studio.api_key):
                 return JSONResponse({"error": "missing or invalid API key"}, status_code=401)
         return await call_next(request)
 
@@ -268,6 +258,12 @@ def create_app(studio: Studio | None = None, keepalive: bool = True) -> FastAPI:
             parts.append(project_context(project, budget_chars=max(2000, ctx * 2)))
         system = "\n\n".join(p for p in parts if p)
         return [{"role": "system", "content": system}] + messages if system else messages
+
+    def start_pull(request: Request, name: str, body: dict):
+        # Model code only runs when the caller explicitly allows it; folders on this computer can
+        # only be imported by local callers (a remote API client must not read arbitrary paths).
+        return studio.store.pull(name, trust_remote_code=body.get("trust_remote_code") is True,
+                                 allow_local=_is_loopback(request))
 
     def require_model(name: str | None) -> str:
         if not name:
@@ -354,7 +350,7 @@ def create_app(studio: Studio | None = None, keepalive: bool = True) -> FastAPI:
         name = body.get("model") or body.get("name")
         if not name:
             raise HTTPException(400, "model is required")
-        job = studio.store.pull(name)
+        job = start_pull(request, name, body)
         stream = body.get("stream", True)
 
         def ollama_events() -> Iterator[dict]:
@@ -675,7 +671,7 @@ def create_app(studio: Studio | None = None, keepalive: bool = True) -> FastAPI:
     @app.post("/api/studio/models/pull")
     async def studio_pull(request: Request):
         body = await request.json()
-        job = studio.store.pull(body.get("name", ""))
+        job = start_pull(request, body.get("name", ""), body)
         return job.state()
 
     @app.post("/api/studio/models/cancel")

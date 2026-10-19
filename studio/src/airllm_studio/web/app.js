@@ -289,11 +289,11 @@
       el("small", { text: `${label} (${Math.floor(pct)}%)` }));
   }
 
-  function confirmInline(container, question, onYes) {
+  function confirmInline(container, question, onYes, yes = "Delete", no = "Keep") {
     const original = [...container.childNodes];
     container.replaceChildren(el("span", { class: "confirm" }, question,
-      el("button", { class: "btn small danger", type: "button", onclick: onYes, text: "Delete" }),
-      el("button", { class: "btn small", type: "button", text: "Keep", onclick: () => container.replaceChildren(...original) })));
+      el("button", { class: "btn small danger", type: "button", onclick: onYes, text: yes }),
+      el("button", { class: "btn small", type: "button", text: no, onclick: () => container.replaceChildren(...original) })));
   }
 
   function renderInstalled() {
@@ -322,6 +322,10 @@
         actions.append(m.loaded
           ? el("button", { class: "btn small", type: "button", text: "Unload", onclick: () => unloadModel() })
           : el("button", { class: "btn small", type: "button", text: "Load", onclick: (e) => loadModel(m.name, e.target) }));
+      } else if (m.needs_remote_code) {
+        const source = m.source === "local" ? m.repo : m.name;
+        actions.append(el("button", { class: "btn small", type: "button", text: "Allow custom code", title: "This model ships Python code that runs on your computer",
+          onclick: () => confirmInline(actions, "Run this model's own code? Only for publishers you trust.", () => pull(source, true), "Allow", "Cancel") }));
       } else {
         actions.append(el("button", { class: "btn small", type: "button", text: "Retry", onclick: () => pull(m.source === "local" ? m.repo : m.name) }));
       }
@@ -394,10 +398,11 @@
     }));
   }
 
-  async function pull(name) {
+  async function pull(name, trustRemoteCode = false) {
     if (!name) return;
     try {
-      await api("/api/studio/models/pull", { method: "POST", body: { name } });
+      const body = trustRemoteCode ? { name, trust_remote_code: true } : { name };
+      await api("/api/studio/models/pull", { method: "POST", body });
       toast(`Pulling ${name}`);
       await refreshModels();
       renderDiscover();

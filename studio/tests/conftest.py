@@ -10,6 +10,9 @@ from airllm_studio.engine import Engine
 from airllm_studio.store import Manifest, ModelStore
 
 
+BASE_URL = "http://127.0.0.1:11435"
+
+
 class FakeEngine(Engine):
     """Behaves like Engine but 'generates' a fixed reply, reporting layer progress on the way."""
 
@@ -86,5 +89,7 @@ def client(studio):
 
     from airllm_studio.server import create_app
 
-    with TestClient(create_app(studio, keepalive=False)) as c:
+    # The server only answers to loopback / IP / allowlisted Host names (DNS-rebinding guard),
+    # so talk to it the way the desktop app does.
+    with TestClient(create_app(studio, keepalive=False), base_url=BASE_URL) as c:
         yield c

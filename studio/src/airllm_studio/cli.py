@@ -61,7 +61,7 @@ def cmd_serve(args) -> int:
     if host not in ("127.0.0.1", "localhost", "::1") and not os.environ.get("AIRLLM_API_KEY"):
         logging.warning("listening on %s without AIRLLM_API_KEY: anyone on the network can use it", host)
     studio = Studio()
-    config = uvicorn.Config(create_app(studio), host=host, port=port, log_config=None,
+    config = uvicorn.Config(create_app(studio, bind_host=host), host=host, port=port, log_config=None,
                             log_level=args.log_level, access_log=False, timeout_graceful_shutdown=5)
     server = uvicorn.Server(config)
     studio.shutdown_hook = lambda: setattr(server, "should_exit", True)
@@ -95,7 +95,10 @@ def cmd_pull(args) -> int:
     started = time.time()
     width = 0
     try:
-        for ev in client.stream("/api/pull", {"model": args.model}):
+        body = {"model": args.model}
+        if args.trust_remote_code:
+            body["trust_remote_code"] = True
+        for ev in client.stream("/api/pull", body):
             if ev.get("status") == "success":
                 print("\r" + " " * width + "\rsuccess")
                 return 0
@@ -295,6 +298,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("pull", help="download and prepare a model (Hugging Face id or local folder)")
     s.add_argument("model")
+    s.add_argument("--trust-remote-code", action="store_true",
+                   help="allow a model that ships its own Python code to run it (only for publishers you trust)")
     s.set_defaults(func=cmd_pull)
 
     s = sub.add_parser("run", help="chat with a model, or answer a single prompt")
