@@ -85,8 +85,8 @@ Older GPUs or drivers may need an older `cu12x` variant.
 
 **Windows.** Run the installer (all users or just you) and open **AirLLM** from the Start menu; it runs in the
 tray (right-click to open the models folder or quit). Optional installer tasks add a desktop shortcut and start
-AirLLM at sign-in. `airllm`, `airllm-python` and `airllm-enable-cuda` work in a new terminal (the last one from an
-Administrator prompt if installed under Program Files).
+AirLLM at sign-in. `airllm`, `airllm-python` and `airllm-enable-cuda` work in a new terminal; under Program Files,
+`airllm-enable-cuda` asks for Administrator rights (UAC) itself before it downloads anything.
 Silent install: `AirLLM-…-setup-x64.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART [/DIR=D:\AirLLM] [/CURRENTUSER]`.
 
 **Verify a download.** `sha256sum -c SHA256SUMS`, and `gh attestation verify <file> --owner RudraLabs-dev`

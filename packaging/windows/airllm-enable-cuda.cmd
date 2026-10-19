@@ -1,6 +1,6 @@
 @echo off
-rem Switch AirLLM's bundled CPU PyTorch to a CUDA build. Run from an elevated prompt
-rem if AirLLM is installed under Program Files.
+rem Switch AirLLM's bundled CPU PyTorch to a CUDA build. Under Program Files it asks for
+rem Administrator rights (UAC) by itself, before downloading.
 rem   airllm-enable-cuda [cu126^|cu128^|cu130^|...]   airllm-enable-cuda status   airllm-enable-cuda disable
 setlocal
 set "ARG=%~1"
