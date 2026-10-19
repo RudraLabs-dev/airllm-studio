@@ -8,7 +8,7 @@
 # Models, settings and chats live in /var/lib/airllm-server (owned by a dynamic service user).
 [Unit]
 Description=AirLLM Studio server (Ollama/OpenAI-compatible API and web UI)
-Documentation=https://github.com/RudraLabs-dev/airllm-packaging
+Documentation=https://github.com/RudraLabs-dev/airllm-studio
 After=network-online.target
 Wants=network-online.target
 
