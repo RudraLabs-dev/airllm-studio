@@ -1,8 +1,18 @@
-# airllm-packaging
+# AirLLM Studio
 
-RudraLabs' build and release pipeline for [AirLLM](https://github.com/lyogavin/airllm).
-It takes AirLLM source — upstream or our fork [RudraLabs-dev/airllm](https://github.com/RudraLabs-dev/airllm) —
-and publishes installable packages on the [Releases](https://github.com/RudraLabs-dev/airllm-packaging/releases) page:
+**Run large language models on everyday hardware.** AirLLM Studio is a desktop app, command line and local API
+server for [AirLLM](https://github.com/lyogavin/airllm), which streams a model through memory one layer at a time,
+so 70B-class models can run on a single consumer GPU or even on the CPU, trading speed for memory.
+One self-contained installer for Linux and Windows: no Python, pip or CUDA setup.
+
+[![Latest release](https://img.shields.io/github/v/release/RudraLabs-dev/airllm-studio?sort=semver&label=release)](https://github.com/RudraLabs-dev/airllm-studio/releases/latest)
+[![Build & release](https://github.com/RudraLabs-dev/airllm-studio/actions/workflows/release.yml/badge.svg)](https://github.com/RudraLabs-dev/airllm-studio/actions/workflows/release.yml)
+[![Lint](https://github.com/RudraLabs-dev/airllm-studio/actions/workflows/lint.yml/badge.svg)](https://github.com/RudraLabs-dev/airllm-studio/actions/workflows/lint.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
+## Download
+
+**[Latest release →](https://github.com/RudraLabs-dev/airllm-studio/releases/latest)**
 
 | Platform | Package |
 |---|---|
@@ -10,25 +20,29 @@ and publishes installable packages on the [Releases](https://github.com/RudraLab
 | Fedora, RHEL / Rocky / Alma 8+ (x86_64, aarch64) | `airllm-<ver>-<rev>.<arch>.rpm` |
 | Windows 10/11 x64 | `AirLLM-<ver>-<rev>-setup-x64.exe` installer, `…-windows-x64.zip` portable |
 
-Every package is **self-contained**: it bundles its own CPython ([python-build-standalone](https://github.com/astral-sh/python-build-standalone)),
-CPU-only PyTorch, transformers and AirLLM, so it never touches the system Python and works the same on every distro.
+## What you get
 
-Every package also ships **[AirLLM Studio](studio/)**, an Ollama-style layer on top of AirLLM:
-
-* **AirLLM desktop app**: chat with history, streaming answers with a live layer meter, a model library that
-  downloads from Hugging Face and prepares AirLLM's layers with progress, and settings (models folder, HF token, GPU).
+* **Desktop app**: chat with history, streaming answers with a live layer meter, a model library that downloads
+  from Hugging Face and prepares AirLLM's layers with progress, and settings (models folder, HF token, GPU).
 * **Projects**: group chats with shared instructions and text files that every chat in the project sees.
 * **Images and voice** for models that take them natively (e.g. images on Qwen3.8-27B); the attach and microphone
   buttons appear only when the selected model can use them.
 * **`airllm` command line**: `airllm app`, `pull`, `run`, `list`, `ps`, `rm`, `stop`, `status`, `serve`.
 * **API server** on `127.0.0.1:11435`, compatible with the **Ollama** API (`/api/chat`, `/api/tags`, ...) and the
   **OpenAI** API (`/v1/chat/completions`), so tools like Open WebUI or any OpenAI SDK can use your models.
+* **Self-contained**: every package bundles its own CPython
+  ([python-build-standalone](https://github.com/astral-sh/python-build-standalone)), CPU PyTorch, transformers and
+  AirLLM, so it never touches the system Python and works the same on every distro. NVIDIA GPUs: one command, below.
+
+Packages are built by RudraLabs from AirLLM source (upstream, or our fork
+[RudraLabs-dev/airllm](https://github.com/RudraLabs-dev/airllm) for fixes on their way upstream) by the
+pipeline [described below](#how-the-pipeline-works). Studio's own docs: [studio/README.md](studio/README.md).
 
 ## Using the packages
 
 ```sh
-sudo apt install ./airllm_4.0.0-2_amd64.deb        # Debian / Ubuntu
-sudo dnf install ./airllm-4.0.0-2.x86_64.rpm       # Fedora / RHEL / Rocky / Alma
+sudo apt install ./airllm_4.0.0-4_amd64.deb        # Debian / Ubuntu
+sudo dnf install ./airllm-4.0.0-4.x86_64.rpm       # Fedora / RHEL / Rocky / Alma
 
 airllm app                                         # desktop app ("AirLLM" in the app menu too)
 airllm pull Qwen/Qwen3-8B                          # download + prepare a model
@@ -75,8 +89,9 @@ AirLLM at sign-in. `airllm`, `airllm-python` and `airllm-enable-cuda` work in a 
 Administrator prompt if installed under Program Files).
 Silent install: `AirLLM-…-setup-x64.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART [/DIR=D:\AirLLM] [/CURRENTUSER]`.
 
-**Verify a download.** `sha256sum -c SHA256SUMS`, and `gh attestation verify <file> --repo RudraLabs-dev/airllm-packaging`
-(each release carries a signed build-provenance attestation).
+**Verify a download.** `sha256sum -c SHA256SUMS`, and `gh attestation verify <file> --owner RudraLabs-dev`
+(each release carries a signed build-provenance attestation; `--owner` also covers releases up to v4.0.0-4,
+which were signed while the repository was named `airllm-packaging`).
 
 ## How the pipeline works
 
