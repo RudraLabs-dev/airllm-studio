@@ -368,7 +368,7 @@ class ModelStore:
             watcher.start()
             try:
                 path = hf_hub_download(info.id, filename, revision=info.sha, cache_dir=str(hub),
-                                       token=token)
+                                       token=token, **_progress_kwargs(job, done_bytes, size))
             finally:
                 stop.set()
                 watcher.join()
@@ -399,7 +399,7 @@ class ModelStore:
                     partial += p.stat().st_size
             except OSError:
                 pass
-            job.update(completed=base + min(partial, size))
+            job.update(completed=max(job.completed, base + min(partial, size)))
 
     # --- prepare (AirLLM layer split) ------------------------------------------------------
     def _prepare(self, job: PullJob, manifest: Manifest) -> None:
@@ -510,6 +510,45 @@ def select_files(files: list[tuple[str, int]], include_code: bool = False) -> li
 
 def split_dir_name(compression: str) -> str:
     return "splitted_model" if compression in ("", "none", None) else f"splitted_model.{compression}"
+
+
+def _progress_kwargs(job: "PullJob", base: int, size: int) -> dict:
+    """hf_hub_download arguments that feed real byte counts into the job.
+
+    Hugging Face's Xet downloader (hf_xet, installed with huggingface-hub) fetches chunks into its
+    own cache and only assembles the ``*.incomplete`` file later, so the size of that file stays near
+    zero while the network is busy. The downloader's progress bars do count the bytes: this reports
+    the highest count any of a file's bars has reached. Older huggingface-hub versions lack the
+    ``tqdm_class`` argument; they get no extra arguments and rely on the file-size watcher alone."""
+    import inspect
+
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.utils import tqdm as hub_tqdm
+
+    if "tqdm_class" not in inspect.signature(hf_hub_download).parameters:
+        return {}
+    seen = {}                    # bar id -> bytes counted so far
+    last_report = [0.0]
+
+    class ProgressBar(hub_tqdm):
+        def __init__(self, *args, **kwargs):
+            self._counted = int(kwargs.get("initial") or 0)
+            super().__init__(*args, **kwargs)
+            seen[id(self)] = self._counted
+
+        def update(self, n=1):   # also called when hub progress bars are disabled: count ourselves
+            self._counted += int(n or 0)
+            seen[id(self)] = self._counted
+            now = time.monotonic()
+            if now - last_report[0] >= 0.25:     # a few UI updates per second, not one per chunk
+                last_report[0] = now
+                job.update(completed=max(job.completed, base + min(max(seen.values()), size)))
+            return super().update(n)
+
+        def display(self, *args, **kwargs):   # the web UI draws progress; print nothing
+            return None
+
+    return {"tqdm_class": ProgressBar}
 
 
 def airllm_class_for(snapshot: Path, token: str | None = None):
