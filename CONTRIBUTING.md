@@ -25,6 +25,18 @@ Rules of thumb:
 * Need a fix in our packages before upstream merges it? Run *Build & release packages* with
   `source_repo = RudraLabs-dev/airllm` and your branch as `airllm_ref` — it ships as a pre-release.
 
+## Documentation (the wiki)
+
+The user and maintainer documentation is the repository's [wiki](https://github.com/RudraLabs-dev/airllm-studio/wiki),
+and its source is the **`wiki/` folder** of this repository. Change docs with a pull request like code:
+
+* Edit or add Markdown pages in `wiki/` (file name = page title, dashes instead of spaces) and link new pages from
+  `wiki/_Sidebar.md`. Check with `python3 scripts/check-wiki.py wiki` (broken links, anchors and sidebar entries).
+* When a pull request that changes `wiki/` is merged to `main`, the **Publish wiki** workflow (`wiki.yml`) copies the
+  folder to the GitHub wiki. It runs **only** for changes under `wiki/`, so code changes never touch the wiki.
+* Do not edit pages in the GitHub wiki editor: the next publish overwrites them.
+* Documentation changes belong in the same pull request as the behaviour they describe.
+
 ## Good first contributions found while packaging
 
 * `air_llm/setup.py` uses `find_packages()`, so the wheel also installs a top-level **`tests`** package into

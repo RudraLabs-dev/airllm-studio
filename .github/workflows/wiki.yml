@@ -1,0 +1,87 @@
+name: Publish wiki
+
+# The wiki/ folder is the source of truth for the repository's GitHub Wiki.
+#   - push to main that changes wiki/**  -> check, then sync the folder to the wiki
+#   - pull request that changes wiki/**  -> check only (never publishes)
+#   - manual run                         -> check, then sync (first publish, or re-sync)
+# Nothing else triggers it: changes to code or packaging never touch the wiki.
+#
+# One-time: GitHub creates a wiki's git repository only when its first page exists.
+# In the repository's Wiki tab click "Create the first page" and save it; this workflow
+# replaces every page from wiki/ from then on.
+
+on:
+  push:
+    branches: [main]
+    paths: ["wiki/**"]
+  pull_request:
+    paths: ["wiki/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wiki
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check pages and links
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check page names, links, anchors and the sidebar
+        run: python3 scripts/check-wiki.py wiki
+
+  publish:
+    name: Sync to the GitHub wiki
+    needs: check
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write    # pushing to <repo>.wiki.git
+    env:
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Clone the wiki
+        run: |
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          git_wiki() { git -c "http.extraheader=AUTHORIZATION: basic $auth" "$@"; }
+          if ! git_wiki ls-remote "https://github.com/${REPO}.wiki.git" HEAD >/dev/null 2>&1; then
+            echo "::error title=Wiki not initialised::GitHub creates the wiki repository with its first page. Open https://github.com/${REPO}/wiki, click 'Create the first page', save it, then re-run this workflow."
+            exit 1
+          fi
+          git_wiki clone --quiet --depth 1 "https://github.com/${REPO}.wiki.git" "$RUNNER_TEMP/wiki"
+          echo "AUTH=$auth" >> "$GITHUB_ENV"
+
+      - name: Replace the wiki with wiki/
+        run: |
+          # Make the clone an exact copy of wiki/ (pages removed from the folder disappear from the wiki).
+          find "$RUNNER_TEMP/wiki" -mindepth 1 -maxdepth 1 -not -name .git -exec rm -rf {} +
+          cp -a wiki/. "$RUNNER_TEMP/wiki/"
+          cd "$RUNNER_TEMP/wiki"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Wiki already matches wiki/ at ${SOURCE_SHA::7}; nothing to publish." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit --quiet -m "Sync wiki from ${SOURCE_SHA::7}" -m "Source: https://github.com/${REPO}/tree/${SOURCE_SHA}/wiki"
+          git -c "http.extraheader=AUTHORIZATION: basic $AUTH" push --quiet origin HEAD
+          {
+            echo "### Wiki published"
+            echo "Synced \`wiki/\` at \`${SOURCE_SHA::7}\`: $(find . -name '*.md' -not -path './.git/*' | wc -l) pages."
+            echo "https://github.com/${REPO}/wiki"
+          } >> "$GITHUB_STEP_SUMMARY"

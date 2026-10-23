@@ -24,6 +24,9 @@ One self-contained installer for Linux and Windows: no Python, pip or CUDA setup
 | Fedora, RHEL / Rocky / Alma 8+ (x86_64, aarch64) | `airllm-<ver>-<rev>.<arch>.rpm` |
 | Windows 10/11 x64 | `AirLLM-<ver>-<rev>-setup-x64.exe` installer, `…-windows-x64.zip` portable |
 
+**Documentation:** the **[wiki](https://github.com/RudraLabs-dev/airllm-studio/wiki)** has getting started, the app, projects, GPU setup,
+the command line, API reference, server mode, security, troubleshooting and how the packages are built.
+
 ## What you get
 
 * **Desktop app**: chat with history, streaming answers with a live layer meter, a model library that downloads
