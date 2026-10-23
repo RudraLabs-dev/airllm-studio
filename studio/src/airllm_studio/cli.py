@@ -201,7 +201,7 @@ def cmd_run(args) -> int:
     models = {m["name"].lower(): m for m in client.get("/api/studio/models")["models"]}
     if args.model.lower() not in models:
         print(f"'{args.model}' is not installed; pulling it first.", file=sys.stderr)
-        if cmd_pull(argparse.Namespace(model=args.model)) != 0:
+        if cmd_pull(argparse.Namespace(model=args.model, trust_remote_code=False)) != 0:
             return 1
     options = {k: v for k, v in (("temperature", args.temperature), ("num_predict", args.max_tokens))
                if v is not None}
