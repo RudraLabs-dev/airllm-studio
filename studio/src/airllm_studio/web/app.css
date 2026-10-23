@@ -73,6 +73,13 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .chat-item.active a { color: var(--ink); }
 .chat-item .icon-btn { visibility: hidden; width: 28px; height: 28px; }
 .chat-item:hover .icon-btn, .chat-item.active .icon-btn, .chat-item .icon-btn:focus-visible { visibility: visible; }
+/* The chat whose answer is being written right now (you can browse while it runs). */
+.chat-item.running > a { position: relative; padding-right: 24px; }
+.chat-item.running > a::after, .row.running .name-link::after { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+.chat-item.running > a::after { position: absolute; right: 10px; top: 50%; margin-top: -3.5px; }
+.row.running .name-link::after { display: inline-block; margin-left: 8px; vertical-align: 1px; }
+@keyframes pulse { 50% { opacity: .2; } }
+@media (prefers-reduced-motion: reduce) { .chat-item.running > a::after, .row.running .name-link::after { animation: none; } }
 .chat-item input { flex: 1; margin: 2px 4px; padding: 5px 6px; border: 1px solid var(--accent); border-radius: var(--radius-s); background: var(--surface); }
 .side-nav { border-top: 1px solid var(--line); padding-top: 8px; display: grid; gap: 2px; }
 .nav-btn { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 0; background: none; border-radius: var(--radius-s); cursor: pointer; color: var(--ink-2); text-align: left; }

@@ -16,6 +16,7 @@ A **project** groups related chats and gives all of them shared context, like pr
 1. In the sidebar, press **+** next to **Projects** and give the project a name (up to 80 characters).
 2. Open the project. Write **Instructions** and press **Save instructions**. Add **Files** by dropping them on the drop zone or choosing them.
 3. Press **New chat** inside the project. Its chats appear nested under the project in the sidebar. A breadcrumb above the chat shows which project you are in.
+   Opening a project shows its page with a **Chats** list (most recently active first). Click a chat to open it. The sidebar expands the open project the same way. This also works while an answer is being written: the chat being answered is marked with a pulsing dot and **Writing an answer...**, and nothing you do on the project page interrupts it.
 4. Move an existing chat in or out from its **⋯** menu (**Move to project**, **No project**, or **New project...**).
 5. **Delete project** (at the bottom of the project page) deletes the project, its files **and its chats**.
 
