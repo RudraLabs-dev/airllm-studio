@@ -31,7 +31,7 @@ CATALOG = [
     {
         "name": "Qwen/Qwen3.8-27B",
         "title": "Qwen3.8 27B (VL)",
-        "summary": "Dense vision-language model; text chat works here.",
+        "summary": "Dense vision-language model: chat about images you attach, or plain text.",
         "download": "", "vram": "~3.3 GB", "tags": ["vision", "general"],
     },
     {

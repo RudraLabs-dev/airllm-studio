@@ -10,6 +10,10 @@ One self-contained installer for Linux and Windows: no Python, pip or CUDA setup
 [![Lint](https://github.com/RudraLabs-dev/airllm-studio/actions/workflows/lint.yml/badge.svg)](https://github.com/RudraLabs-dev/airllm-studio/actions/workflows/lint.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
+> **Independent project.** AirLLM Studio is made by [RudraLabs](https://github.com/RudraLabs-dev) and is not affiliated with,
+> sponsored or endorsed by the authors of [AirLLM](https://github.com/lyogavin/airllm). AirLLM is used unmodified under the
+> Apache License 2.0; "AirLLM" is the name of that project and belongs to its owners.
+
 ## Download
 
 **[Latest release →](https://github.com/RudraLabs-dev/airllm-studio/releases/latest)**
@@ -24,6 +28,9 @@ One self-contained installer for Linux and Windows: no Python, pip or CUDA setup
 
 * **Desktop app**: chat with history, streaming answers with a live layer meter, a model library that downloads
   from Hugging Face and prepares AirLLM's layers with progress, and settings (models folder, HF token, GPU).
+* **Projects**: group chats with shared instructions and text files that every chat in the project sees.
+* **Images and voice** for models that take them natively (e.g. images on Qwen3.8-27B); the attach and microphone
+  buttons appear only when the selected model can use them.
 * **`airllm` command line**: `airllm app`, `pull`, `run`, `list`, `ps`, `rm`, `stop`, `status`, `serve`.
 * **API server** on `127.0.0.1:11435`, compatible with the **Ollama** API (`/api/chat`, `/api/tags`, ...) and the
   **OpenAI** API (`/v1/chat/completions`), so tools like Open WebUI or any OpenAI SDK can use your models.
@@ -82,8 +89,8 @@ Older GPUs or drivers may need an older `cu12x` variant.
 
 **Windows.** Run the installer (all users or just you) and open **AirLLM** from the Start menu; it runs in the
 tray (right-click to open the models folder or quit). Optional installer tasks add a desktop shortcut and start
-AirLLM at sign-in. `airllm`, `airllm-python` and `airllm-enable-cuda` work in a new terminal (the last one from an
-Administrator prompt if installed under Program Files).
+AirLLM at sign-in. `airllm`, `airllm-python` and `airllm-enable-cuda` work in a new terminal; under Program Files,
+`airllm-enable-cuda` asks for Administrator rights (UAC) itself before it downloads anything.
 Silent install: `AirLLM-…-setup-x64.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART [/DIR=D:\AirLLM] [/CURRENTUSER]`.
 
 **Verify a download.** `sha256sum -c SHA256SUMS`, and `gh attestation verify <file> --owner RudraLabs-dev`

@@ -23,15 +23,17 @@ from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from .catalog import CATALOG
-from .chats import ChatStore
+from .chats import UNSET, ChatStore, ProjectError, project_context
 from .config import SettingsStore, data_dir, logs_dir, parse_host
 from .engine import Engine, EngineError, GenOptions
+from .media import MediaError, parse_ollama_media, parse_openai_content
 from .security import allowed_host_names, api_key_matches, env_list, normalize_origin, request_allowed
 from .store import ModelStore, StoreError
 
 log = logging.getLogger("airllm_studio.server")
 WEB_DIR = Path(__file__).parent / "web"
 NS = 1_000_000_000
+MAX_UPLOAD_BYTES = 2_000_000
 
 
 # ---------------------------------------------------------------------------------------------
@@ -60,14 +62,11 @@ def _airllm_version() -> str:
         return "unknown"
 
 
-def _text_content(content) -> str:
-    """OpenAI messages may carry a list of parts; keep the text ones."""
-    if isinstance(content, list):
-        return "".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") in ("text", None))
-    return "" if content is None else str(content)
-
-
 def _clean_messages(messages) -> list[dict]:
+    """Normalise Ollama and OpenAI message shapes to {role, content[, images][, audio]}.
+
+    Images/audio arrive as Ollama-style ``images``/``audio`` base64 lists or OpenAI content parts
+    (``image_url`` data URLs, ``input_audio``); they are decoded to bytes here."""
     if not isinstance(messages, list):
         raise HTTPException(400, "messages must be a list")
     out = []
@@ -77,7 +76,34 @@ def _clean_messages(messages) -> list[dict]:
         role = m["role"] if m["role"] in ("system", "user", "assistant", "tool") else "user"
         if role == "tool":
             role = "user"
-        out.append({"role": role, "content": _text_content(m.get("content"))})
+        try:
+            text, media = parse_openai_content(m.get("content"))
+            for key, items in parse_ollama_media(m).items():
+                media.setdefault(key, []).extend(items)
+        except MediaError as exc:
+            raise HTTPException(400, str(exc)) from None
+        out.append({"role": role, "content": text, **media})
+    return out
+
+
+MEDIA_LABEL = {"images": ("vision", "images", "[image omitted]"), "audio": ("audio", "audio", "[audio omitted]")}
+
+
+def _fit_media(model: str, capabilities: list[str], messages: list[dict]) -> list[dict]:
+    """Media for a model that cannot take it: an error if it is in the newest message (the user is
+    asking about it now), otherwise dropped from older turns with a placeholder so a chat can
+    switch to a text-only model."""
+    out = []
+    for i, m in enumerate(messages):
+        m = dict(m)
+        for key, (cap, noun, placeholder) in MEDIA_LABEL.items():
+            if m.get(key) and cap not in capabilities:
+                if i == len(messages) - 1:
+                    raise HTTPException(400, f"{model} does not take {noun}. Pick a model that does, "
+                                             f"or send the message without {noun}.")
+                m.pop(key)
+                m["content"] = (m["content"] + " " + placeholder).strip()
+        out.append(m)
     return out
 
 
@@ -196,6 +222,14 @@ def create_app(studio: Studio | None = None, keepalive: bool = True, bind_host: 
     async def store_error(request: Request, exc: StoreError):
         return JSONResponse({"error": str(exc)}, status_code=400)
 
+    @app.exception_handler(ProjectError)
+    async def project_error(request: Request, exc: ProjectError):
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    @app.exception_handler(MediaError)
+    async def media_error(request: Request, exc: MediaError):
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
     def local_only(request: Request):
         if not _is_loopback(request):
             raise HTTPException(403, "only allowed from this computer")
@@ -212,11 +246,18 @@ def create_app(studio: Studio | None = None, keepalive: bool = True, bind_host: 
             context_length=opts.get("num_ctx"),
         )
 
-    def with_system(messages: list[dict]) -> list[dict]:
-        system = studio.settings.settings.defaults.system_prompt.strip()
-        if system and not any(m["role"] == "system" for m in messages):
-            return [{"role": "system", "content": system}] + messages
-        return messages
+    def with_system(messages: list[dict], project: dict | None = None,
+                    context_length: int | None = None) -> list[dict]:
+        """Prepend the default system prompt and, for project chats, the project's instructions
+        and files (cut to about half the context, so the conversation still fits)."""
+        if any(m["role"] == "system" for m in messages):
+            return messages
+        parts = [studio.settings.settings.defaults.system_prompt.strip()]
+        if project:
+            ctx = context_length or studio.settings.settings.defaults.context_length
+            parts.append(project_context(project, budget_chars=max(2000, ctx * 2)))
+        system = "\n\n".join(p for p in parts if p)
+        return [{"role": "system", "content": system}] + messages if system else messages
 
     def start_pull(request: Request, name: str, body: dict):
         # Model code only runs when the caller explicitly allows it; folders on this computer can
@@ -231,6 +272,20 @@ def create_app(studio: Studio | None = None, keepalive: bool = True, bind_host: 
         if manifest is None:
             raise HTTPException(404, f"model '{name}' not found, try pulling it first")
         return manifest.name
+
+    def capabilities_of(name: str) -> list[str]:
+        manifest = studio.store.get(name)
+        if manifest is None:
+            return ["completion"]
+        return studio.store.ensure_capabilities(manifest).capabilities or ["completion"]
+
+    def project_for(project_id) -> dict | None:
+        if not project_id:
+            return None
+        project = studio.chats.get_project(str(project_id), with_files=True, with_content=True)
+        if project is None:
+            raise HTTPException(404, "project not found")
+        return project
 
     # =========================================================================================
     # Ollama-compatible API
@@ -272,6 +327,7 @@ def create_app(studio: Studio | None = None, keepalive: bool = True, bind_host: 
         name = require_model(body.get("model") or body.get("name"))
         m = studio.store.get(name)
         return {"modelfile": "", "parameters": "", "template": "",
+                "capabilities": capabilities_of(name),
                 "details": _ollama_model(m)["details"],
                 "model_info": {"general.architecture": m.model_type,
                                "general.context_length": m.context_length,
@@ -387,6 +443,8 @@ def create_app(studio: Studio | None = None, keepalive: bool = True, bind_host: 
                     "done": True, "done_reason": "load"}
         opts = gen_options(body.get("options"))
         want_progress = bool(body.get("airllm_progress"))   # the Studio UI's layer meter
+        project = project_for(body.get("airllm_project"))  # Studio projects: instructions + files
+        messages = _fit_media(name, capabilities_of(name), messages)
 
         def shape(ev):
             base = {"model": name, "created_at": _now(), "done": False}
@@ -406,7 +464,7 @@ def create_app(studio: Studio | None = None, keepalive: bool = True, bind_host: 
                     "done": True, "done_reason": reason, **_ollama_stats(stats),
                     "tokens_per_second": stats.get("tokens_per_second", 0)}
 
-        return await _run_generation(name, with_system(messages), opts, None,
+        return await _run_generation(name, with_system(messages, project, opts.context_length), opts, None,
                                      body.get("stream", True), shape, final)
 
     @app.post("/api/generate")
@@ -424,7 +482,14 @@ def create_app(studio: Studio | None = None, keepalive: bool = True, bind_host: 
         messages = []
         if body.get("system"):
             messages.append({"role": "system", "content": body["system"]})
-        messages.append({"role": "user", "content": prompt})
+        try:
+            media = parse_ollama_media(body)
+        except MediaError as exc:
+            raise HTTPException(400, str(exc)) from None
+        messages.append({"role": "user", "content": prompt, **media})
+        if media and raw:
+            raise HTTPException(400, "raw prompts cannot carry images or audio")
+        messages = _fit_media(name, capabilities_of(name), messages)
         opts = gen_options(body.get("options"))
 
         def shape(ev):
@@ -465,7 +530,8 @@ def create_app(studio: Studio | None = None, keepalive: bool = True, bind_host: 
         name = studio.store.get(name).name
         if chat_mode:
             try:
-                messages = with_system(_clean_messages(body.get("messages") or []))
+                messages = with_system(_fit_media(name, capabilities_of(name),
+                                                  _clean_messages(body.get("messages") or [])))
             except HTTPException as exc:
                 return _oai_error(exc.detail)
             raw = None
@@ -596,7 +662,7 @@ def create_app(studio: Studio | None = None, keepalive: bool = True, bind_host: 
         jobs = {name: job.state() for name, job in studio.store.jobs.items()}
         out = []
         for m in studio.store.list():
-            item = m.to_dict()
+            item = studio.store.ensure_capabilities(m).to_dict()
             item["job"] = jobs.pop(m.name, None)
             item["loaded"] = studio.engine.model_name == m.name
             out.append(item)
@@ -666,7 +732,8 @@ def create_app(studio: Studio | None = None, keepalive: bool = True, bind_host: 
     @app.post("/api/studio/chats")
     async def create_chat(request: Request):
         body = await request.json()
-        return studio.chats.create(body.get("title", ""), body.get("model", ""), body.get("messages"))
+        return studio.chats.create(body.get("title", ""), body.get("model", ""), body.get("messages"),
+                                   project_id=body.get("project_id"))
 
     @app.get("/api/studio/chats/{chat_id}")
     def get_chat(chat_id: str):
@@ -678,7 +745,8 @@ def create_app(studio: Studio | None = None, keepalive: bool = True, bind_host: 
     @app.patch("/api/studio/chats/{chat_id}")
     async def update_chat(chat_id: str, request: Request):
         body = await request.json()
-        chat = studio.chats.update(chat_id, body.get("title"), body.get("model"), body.get("messages"))
+        chat = studio.chats.update(chat_id, body.get("title"), body.get("model"), body.get("messages"),
+                                   project_id=body["project_id"] if "project_id" in body else UNSET)
         if chat is None:
             raise HTTPException(404, "chat not found")
         return chat
@@ -692,6 +760,67 @@ def create_app(studio: Studio | None = None, keepalive: bool = True, bind_host: 
     @app.delete("/api/studio/chats")
     def clear_chats():
         return {"deleted": studio.chats.clear()}
+
+    # --- projects ------------------------------------------------------------------------
+    def _project_or_404(project_id: str) -> dict:
+        project = studio.chats.get_project(project_id)
+        if project is None:
+            raise HTTPException(404, "project not found")
+        return project
+
+    @app.get("/api/studio/projects")
+    def list_projects():
+        return {"projects": studio.chats.list_projects()}
+
+    @app.post("/api/studio/projects")
+    async def create_project(request: Request):
+        body = await request.json()
+        return studio.chats.create_project(body.get("name", ""), body.get("instructions", ""),
+                                           body.get("model", ""))
+
+    @app.get("/api/studio/projects/{project_id}")
+    def get_project(project_id: str):
+        return _project_or_404(project_id)
+
+    @app.patch("/api/studio/projects/{project_id}")
+    async def update_project(project_id: str, request: Request):
+        body = await request.json()
+        project = studio.chats.update_project(project_id, body.get("name"), body.get("instructions"),
+                                              body.get("model"))
+        if project is None:
+            raise HTTPException(404, "project not found")
+        return project
+
+    @app.delete("/api/studio/projects/{project_id}")
+    def delete_project(project_id: str):
+        deleted = studio.chats.delete_project(project_id)
+        if deleted is None:
+            raise HTTPException(404, "project not found")
+        return {"deleted": True, "deleted_chats": deleted}
+
+    @app.post("/api/studio/projects/{project_id}/files")
+    async def add_project_file(project_id: str, request: Request, name: str = ""):
+        """Raw file body (any content type); the file name comes in ?name=."""
+        _project_or_404(project_id)
+        data = bytearray()
+        async for chunk in request.stream():   # bounded read: Content-Length may be absent or wrong
+            data += chunk
+            if len(data) > MAX_UPLOAD_BYTES:
+                raise HTTPException(413, "file too large")
+        return studio.chats.add_file(project_id, name or "file.txt", bytes(data))
+
+    @app.get("/api/studio/projects/{project_id}/files/{file_id}")
+    def get_project_file(project_id: str, file_id: str):
+        f = studio.chats.get_file(project_id, file_id)
+        if f is None:
+            raise HTTPException(404, "file not found")
+        return f
+
+    @app.delete("/api/studio/projects/{project_id}/files/{file_id}")
+    def delete_project_file(project_id: str, file_id: str):
+        if not studio.chats.delete_file(project_id, file_id):
+            raise HTTPException(404, "file not found")
+        return {"deleted": True}
 
     # --- desktop helpers -----------------------------------------------------------------
     @app.post("/api/studio/open-folder")

@@ -73,7 +73,7 @@ jobs:
       - name: Set up a test environment (no torch needed)
         run: |
           python3 -m venv /tmp/venv
-          /tmp/venv/bin/pip install -q fastapi uvicorn huggingface-hub pytest httpx ruff
+          /tmp/venv/bin/pip install -q fastapi uvicorn huggingface-hub pytest httpx ruff pillow numpy scipy
           /tmp/venv/bin/pip install -q --no-deps ./studio
       - name: ruff
         run: /tmp/venv/bin/ruff check --select E,F,W,B --line-length 120 --target-version py310 studio packaging/tests

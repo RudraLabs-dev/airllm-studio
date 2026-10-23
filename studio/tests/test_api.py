@@ -166,6 +166,7 @@ def test_api_key_blocks_remote_only(studio, monkeypatch):
 
     from airllm_studio.server import create_app
 
+    monkeypatch.setenv("AIRLLM_HOST", "0.0.0.0:11435")       # serving other machines, as documented
     studio.api_key = "s3cret"
     app = create_app(studio, keepalive=False)
     local = TestClient(app, base_url=BASE_URL)              # TestClient host counts as local

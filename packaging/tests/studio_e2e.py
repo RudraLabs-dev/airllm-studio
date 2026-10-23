@@ -8,6 +8,9 @@
 3. Pulls (imports + AirLLM layer split), then exercises the Ollama API (/api/chat, /api/tags),
    the OpenAI API (/v1/chat/completions, streaming and not), the CLI (`airllm list`, `airllm run`)
    and the web UI (GET /).
+4. Offline mode also checks projects (instructions + a text file become the chat's context) and
+   image input on a tiny random Qwen3.5 vision-language model, the architecture AirLLM streams
+   with its vision tower kept resident.
 """
 from __future__ import annotations
 
@@ -20,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -51,6 +55,68 @@ def make_tiny_model(path: Path) -> str:
     return str(path)
 
 
+def make_tiny_vl_model(path: Path) -> str:
+    """Tiny random Qwen3.5 VL (Qwen3_5ForConditionalGeneration) with a processor and chat template."""
+    import torch
+    from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
+    from transformers import (AutoImageProcessor, AutoVideoProcessor, PreTrainedTokenizerFast,
+                              Qwen3_5Config, Qwen3_5ForConditionalGeneration, Qwen3VLProcessor)
+
+    path.mkdir(parents=True, exist_ok=True)
+    specials = ["<|endoftext|>", "<|im_start|>", "<|im_end|>", "<|vision_start|>", "<|vision_end|>",
+                "<|image_pad|>", "<|video_pad|>"]
+    tok = Tokenizer(models.BPE(unk_token=None))
+    tok.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    tok.decoder = decoders.ByteLevel()
+    tok.train_from_iterator(["describe the picture please", "a small red square", "hello"] * 40,
+                            trainers.BpeTrainer(vocab_size=320, special_tokens=specials,
+                                                initial_alphabet=pre_tokenizers.ByteLevel.alphabet()))
+    hf_tok = PreTrainedTokenizerFast(tokenizer_object=tok, eos_token="<|im_end|>", pad_token="<|endoftext|>")
+    hf_tok.add_special_tokens({"additional_special_tokens": specials[1:]})
+    ids = {t: hf_tok.convert_tokens_to_ids(t) for t in specials}
+    template = ("{% for m in messages %}<|im_start|>{{ m['role'] }}\n{% if m['content'] is string %}"
+                "{{ m['content'] }}{% else %}{% for c in m['content'] %}{% if c['type'] == 'image' %}"
+                "<|vision_start|><|image_pad|><|vision_end|>{% elif c['type'] == 'text' %}{{ c['text'] }}"
+                "{% endif %}{% endfor %}{% endif %}<|im_end|>\n{% endfor %}"
+                "{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}")
+    hf_tok.chat_template = template
+    config = Qwen3_5Config(
+        text_config=dict(vocab_size=len(hf_tok), hidden_size=64, intermediate_size=128, num_hidden_layers=2,
+                         num_attention_heads=4, num_key_value_heads=2, head_dim=16, max_position_embeddings=512,
+                         linear_key_head_dim=16, linear_value_head_dim=16, linear_num_key_heads=2,
+                         linear_num_value_heads=4, layer_types=["linear_attention", "full_attention"],
+                         eos_token_id=ids["<|im_end|>"], pad_token_id=ids["<|endoftext|>"]),
+        vision_config=dict(depth=1, hidden_size=32, intermediate_size=64, num_heads=2, patch_size=16,
+                           spatial_merge_size=2, temporal_patch_size=2, out_hidden_size=64,
+                           num_position_embeddings=64),
+        image_token_id=ids["<|image_pad|>"], video_token_id=ids["<|video_pad|>"],
+        vision_start_token_id=ids["<|vision_start|>"], vision_end_token_id=ids["<|vision_end|>"],
+        tie_word_embeddings=False)
+    config.architectures = ["Qwen3_5ForConditionalGeneration"]
+    torch.manual_seed(0)
+    Qwen3_5ForConditionalGeneration(config).save_pretrained(path, safe_serialization=True)
+    hf_tok.save_pretrained(path)
+    (path / "preprocessor_config.json").write_text(json.dumps({
+        "image_processor_type": "Qwen2VLImageProcessorFast", "patch_size": 16, "temporal_patch_size": 2,
+        "merge_size": 2, "size": {"shortest_edge": 1024, "longest_edge": 4096},
+        "image_mean": [0.5, 0.5, 0.5], "image_std": [0.5, 0.5, 0.5]}))
+    Qwen3VLProcessor(image_processor=AutoImageProcessor.from_pretrained(path), tokenizer=hf_tok,
+                     video_processor=AutoVideoProcessor.from_pretrained(path),
+                     chat_template=template).save_pretrained(path)
+    return str(path)
+
+
+def png_base64(width=48, height=32) -> str:
+    import base64
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), (200, 30, 30)).save(buf, "PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
 def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -62,6 +128,16 @@ def call(url: str, path: str, body: dict | None = None, method: str | None = Non
     req = urllib.request.Request(url + path, data=data, method=method or ("POST" if data else "GET"),
                                  headers={"Content-Type": "application/json"})
     return urllib.request.urlopen(req, timeout=timeout)
+
+
+def call_json(url: str, path: str, body: dict | None = None, method: str | None = None) -> dict:
+    return json.loads(call(url, path, body, method).read())
+
+
+def upload(url: str, path: str, data: bytes) -> dict:
+    req = urllib.request.Request(url + path, data=data, method="POST",
+                                 headers={"Content-Type": "application/octet-stream"})
+    return json.loads(urllib.request.urlopen(req, timeout=60).read())
 
 
 def annotate(message: str) -> None:
@@ -139,6 +215,45 @@ def main() -> int:
         out = subprocess.run(cli + ["run", name, "Say hi", "--max-tokens", "4"], env=env,
                              capture_output=True, text=True, timeout=600)
         check(out.returncode == 0, f"airllm run answered: {out.stdout.strip()!r}")
+
+        if not args.model:
+            # Projects: instructions + a text file reach the model as the system prompt
+            plain = call_json(url, "/api/chat", {"model": name, "stream": False, "options": {"num_predict": 2},
+                                                 "messages": [{"role": "user", "content": "Hello"}]})
+            project = call_json(url, "/api/studio/projects", {"name": "E2E", "instructions": "Be brief."})
+            upload(url, f"/api/studio/projects/{project['id']}/files?name=notes.md",
+                   b"# Notes\nAirLLM streams one layer at a time.\n")
+            in_project = call_json(url, "/api/chat", {"model": name, "stream": False, "airllm_project": project["id"],
+                                                      "options": {"num_predict": 2},
+                                                      "messages": [{"role": "user", "content": "Hello"}]})
+            check(in_project.get("done") and in_project["prompt_eval_count"] > plain["prompt_eval_count"] + 10,
+                  f"project context reached the model ({plain['prompt_eval_count']} -> "
+                  f"{in_project['prompt_eval_count']} prompt tokens)")
+            chat = call_json(url, "/api/studio/chats", {"title": "e2e", "project_id": project["id"]})
+            check(chat["project_id"] == project["id"], "chat saved inside the project")
+
+            # Images on a vision-language model (and refused for a text-only one)
+            vl = make_tiny_vl_model(work / "tiny-vl")
+            events = [json.loads(line) for line in call(url, "/api/pull", {"model": vl}) if line.strip()]
+            check(events[-1].get("status") == "success", f"pull tiny VL -> {events[-1]}")
+            models = {m["name"]: m for m in call_json(url, "/api/studio/models")["models"]}
+            vl_name = next(n for n in models if n.endswith("tiny-vl"))
+            check(models[vl_name]["capabilities"] == ["completion", "vision"]
+                  and models[name]["capabilities"] == ["completion"],
+                  f"capabilities: {vl_name}={models[vl_name]['capabilities']} {name}={models[name]['capabilities']}")
+            image = png_base64()
+            ask = [{"role": "user", "content": "Describe", "images": [image]}]
+            seen = call_json(url, "/api/chat", {"model": vl_name, "stream": False, "options": {"num_predict": 3},
+                                                "messages": ask})
+            check(seen.get("done") and seen["prompt_eval_count"] > 10,
+                  f"vision model answered about an image ({seen['prompt_eval_count']} prompt tokens incl. image)")
+            try:
+                call(url, "/api/chat", {"model": name, "stream": False,
+                                        "messages": [{"role": "user", "content": "x", "images": [image]}]})
+                refused = False
+            except urllib.error.HTTPError as exc:
+                refused = exc.code == 400
+            check(refused, "text-only model refuses images")
 
         html = call(url, "/").read().decode()
         check("<title>AirLLM" in html, "web UI served at /")

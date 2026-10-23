@@ -1,5 +1,7 @@
 import threading
 
+import pytest
+
 from airllm_studio.cli import build_parser, human_bytes, table
 from airllm_studio.engine import GenOptions
 
@@ -45,3 +47,40 @@ def test_cli_parser_and_helpers():
     assert p.parse_args(["ls"]).func.__name__ == "cmd_list"
     assert human_bytes(1536) == "2 KB" and human_bytes(5 * 1024**3) == "5.0 GB"
     assert table([["a", "1"]], ["NAME", "N"]).splitlines()[1].startswith("a")
+
+
+def test_long_chats_drop_old_turns_but_keep_system_and_latest(studio):
+    """Too long a history loses its oldest turns, never the system prompt (project files) or the question."""
+    np = pytest.importorskip("numpy")
+
+    class Tok:
+        chat_template = "x"
+
+        def apply_chat_template(self, msgs, tokenize, add_generation_prompt):
+            return "|".join(f"{m['role']}:{m['content']}" for m in msgs)
+
+        def __call__(self, text, return_tensors, add_special_tokens):
+            return {"input_ids": np.zeros((1, len(text.split())), dtype=np.int64)}
+
+    class Model:
+        tokenizer = Tok()
+
+    eng = studio.engine
+    eng.model = Model()
+    msgs = [{"role": "system", "content": "s " * 20}]
+    for i in range(10):
+        msgs += [{"role": "user", "content": f"q{i} " * 10}, {"role": "assistant", "content": f"a{i} " * 10}]
+    msgs.append({"role": "user", "content": "latest question"})
+    seen = []
+    orig = Tok.__call__
+
+    def spy(self, text, **kw):
+        seen.append(text)
+        return orig(self, text, **kw)
+
+    Tok.__call__ = spy
+    ids = eng._encode(msgs, None, limit=80)
+    assert ids.shape[1] <= 80
+    final = seen[-1]
+    assert final.startswith("system:") and final.endswith("user:latest question")
+    assert "q0" not in final and "a9" in final

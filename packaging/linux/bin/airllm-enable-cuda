@@ -38,14 +38,18 @@ esac
 
 # Match the bundled torch version so transformers/airllm see the same API they were tested with.
 torch_version="$("$PY" -c 'import importlib.metadata as m; print(m.version("torch").split("+")[0])')"
-echo "Installing torch==$torch_version ($variant) into $CUDA_SITE ..."
+# torchvision (used by vision models' image processors) must be the build that matches torch.
+vision_version="$("$PY" -c 'import importlib.metadata as m; print(m.version("torchvision").split("+")[0])' 2>/dev/null || true)"
+set -- "torch==$torch_version"
+[ -n "$vision_version" ] && set -- "$@" "torchvision==$vision_version"
+echo "Installing $* ($variant) into $CUDA_SITE ..."
 
 tmp="$CUDA_SITE.new"
 rm -rf "$tmp"
 mkdir -p "$STATE_DIR"
 PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1 PIP_ROOT_USER_ACTION=ignore \
     "$PY" -m pip install --target "$tmp" \
-        --index-url "https://download.pytorch.org/whl/$variant" "torch==$torch_version"
+        --index-url "https://download.pytorch.org/whl/$variant" "$@"
 echo "$variant" > "$tmp/.airllm-variant"
 rm -rf "$CUDA_SITE"
 mv "$tmp" "$CUDA_SITE"

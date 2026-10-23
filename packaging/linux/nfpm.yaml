@@ -20,7 +20,8 @@ description: |-
   optional systemd service. Self-contained: bundles its own CPython, CPU-only
   PyTorch, transformers and AirLLM under /opt/airllm, so it does not touch the
   system Python. `sudo airllm-enable-cuda` switches PyTorch to a CUDA build.
-  Packaged by RudraLabs from https://github.com/lyogavin/airllm
+  Packaged by RudraLabs from https://github.com/lyogavin/airllm. An independent
+  project, not affiliated with or endorsed by the AirLLM authors.
 
 contents:
   - src: ${PAYLOAD_DIR}

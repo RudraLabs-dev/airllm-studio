@@ -29,6 +29,13 @@
     retry: '<path d="M15.5 9.5a5.5 5.5 0 1 1-1.8-4.1M15.5 3.5v3.5H12"/>',
     edit: '<path d="M4 16h3l8.3-8.3-3-3L4 13v3zM11.3 5.7l3 3"/>',
     trash: '<path d="M4.5 6h11M8 6V4.5h4V6M6 6l.7 9.5h6.6L14 6"/>',
+    folder: '<path d="M3 6.5V15a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1h-6.2L8.3 5H4a1 1 0 0 0-1 1.5z"/>',
+    plus: '<path d="M10 4v12M4 10h12"/>',
+    x: '<path d="M5 5l10 10M15 5L5 15"/>',
+    move: '<path d="M3 6.5V15a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1h-6.2L8.3 5H4a1 1 0 0 0-1 1.5z"/><path d="M8 11.5h5M11 9.5l2 2-2 2"/>',
+    file: '<path d="M6 3h5.5L15 6.5V16a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M11 3v4h4"/>',
+    wave: '<path d="M3 10h1.5M6 7v6M9 4.5v11M12 7v6M15 8.5v3M17 10h0"/>',
+    more: '<path d="M5 10h.01M10 10h.01M15 10h.01" stroke-width="2.8"/>',
   };
 
   const store = {
@@ -157,6 +164,11 @@
     settings: null,
     catalog: [],
     online: true,
+    projects: [],
+    project: null,              // project open in the project view (with files)
+    newChatProject: null,       // project id for the next new chat
+    attachments: [],            // pending: { kind: "image"|"audio", data: base64, url, name, seconds }
+    recorder: null,
   };
 
   const readyModels = () => state.models.filter((m) => m.status === "ready");
@@ -164,15 +176,19 @@
   // ------------------------------------------------------------------ views
   function show(view) {
     state.view = view;
-    for (const v of ["chat", "models", "settings"]) $(`#view-${v}`).hidden = v !== view;
+    for (const v of ["chat", "project", "models", "settings"]) $(`#view-${v}`).hidden = v !== view;
     $("#navModels").classList.toggle("active", view === "models");
     $("#navSettings").classList.toggle("active", view === "settings");
     $("#app").classList.remove("menu-open");
     if (view === "models") refreshModels().then(renderDiscover);
     if (view === "settings") loadSettings();
-    if (view === "chat") $("#prompt").focus();
+    if (view === "chat") { renderCrumb(); $("#prompt").focus(); }
     renderChatList();
   }
+
+  const projectById = (id) => state.projects.find((p) => p.id === id);
+  const modelCaps = (name) => state.models.find((m) => m.name === name)?.capabilities || ["completion"];
+  const currentModel = () => $("#modelSelect").value || state.model;
 
   // ------------------------------------------------------------------ status
   async function refreshStatus() {
@@ -231,6 +247,7 @@
     if (!ready.length) {
       sel.append(el("option", { value: "", text: "No models yet" }));
       sel.disabled = true;
+      updateComposerTools();
       return;
     }
     sel.disabled = false;
@@ -238,6 +255,22 @@
     const pick = ready.some((m) => m.name === current) ? current : ready[0].name;
     sel.value = pick;
     if (!state.model || !ready.some((m) => m.name === state.model)) { state.model = pick; store.set("model", pick); }
+    updateComposerTools();
+  }
+
+  // Attach/mic buttons appear only for models that take images/audio natively.
+  function updateComposerTools() {
+    const caps = modelCaps(currentModel());
+    const vision = caps.includes("vision"), audio = caps.includes("audio");
+    $("#attachBtn").hidden = !vision;
+    $("#micBtn").hidden = !audio && !state.recorder;
+    const dropped = state.attachments.filter((a) => (a.kind === "image" && !vision) || (a.kind === "audio" && !audio));
+    if (dropped.length) {
+      state.attachments = state.attachments.filter((a) => !dropped.includes(a));
+      renderAttachments();
+      toast(`${currentModel()} does not take ${dropped[0].kind === "image" ? "images" : "audio"}; removed the attachment.`);
+    }
+    $("#prompt").placeholder = vision && audio ? "Message, image or voice" : vision ? "Message or image" : audio ? "Message or voice" : "Message";
   }
 
   function jobLine(job) {
@@ -277,6 +310,8 @@
       if (m.size_on_disk) meta.append(el("span", { text: fmtBytes(m.size_on_disk) + " on disk" }));
       if (m.context_length) meta.append(el("span", { text: `${m.context_length.toLocaleString()} token context` }));
       if (m.compression && m.compression !== "none") meta.append(el("span", { text: m.compression }));
+      if ((m.capabilities || []).includes("vision")) meta.append(el("span", { class: "tag", text: "Images" }));
+      if ((m.capabilities || []).includes("audio")) meta.append(el("span", { class: "tag", text: "Voice" }));
       if (m.status === "error" && !busy) meta.append(el("span", { class: "err", text: m.error || "Failed" }));
 
       const actions = el("div", { class: "actions" });
@@ -443,41 +478,117 @@
     return d.toLocaleDateString(undefined, { year: "numeric", month: "long" });
   }
 
+  // The project whose chats are shown expanded in the sidebar.
+  function openProjectId() {
+    if (state.view === "project") return state.project?.id || null;
+    return state.chat?.project_id || (state.chat ? null : state.newChatProject);
+  }
+
   function renderChatList() {
     const nav = $("#chatList");
     nav.replaceChildren();
+    const expanded = openProjectId();
+
+    nav.append(el("div", { class: "side-head" }, el("span", { text: "Projects" }),
+      el("button", { class: "icon-btn", type: "button", "aria-label": "New project", title: "New project", onclick: createProject }, icon(ICONS.plus))));
+    if (!state.projects.length) nav.append(el("div", { class: "side-empty", text: "Group chats with shared instructions and files." }));
+    for (const p of state.projects) {
+      const open = p.id === expanded;
+      const active = state.view === "project" && state.project?.id === p.id;
+      const item = el("div", { class: "chat-item project-item" + (open ? " open" : "") + (active ? " active" : "") },
+        el("a", { href: "#", title: p.name, "aria-current": active ? "page" : null, "aria-expanded": String(open),
+          onclick: (e) => { e.preventDefault(); openProject(p.id); } }, icon(ICONS.folder), el("span", { text: p.name })));
+      nav.append(item);
+      if (open) for (const c of state.chats.filter((c) => c.project_id === p.id)) nav.append(chatItem(c, true));
+    }
+
     let lastGroup = "";
-    for (const c of state.chats) {
+    for (const c of state.chats.filter((c) => !c.project_id)) {
       const g = groupLabel(c.updated_at);
       if (g !== lastGroup) { nav.append(el("div", { class: "chat-group", text: g })); lastGroup = g; }
-      const active = state.view === "chat" && state.chat?.id === c.id;
-      const item = el("div", { class: "chat-item" + (active ? " active" : "") });
-      const link = el("a", { href: "#" + c.id, text: c.title || "New chat", title: c.title,
-        "aria-current": active ? "page" : null, onclick: (e) => { e.preventDefault(); openChat(c.id); } });
-      const rename = el("button", { class: "icon-btn", type: "button", "aria-label": "Rename chat", title: "Rename",
-        onclick: () => {
-          const input = el("input", { value: c.title, "aria-label": "Chat title" });
-          const finish = async (save) => {
-            if (save && input.value.trim() && input.value.trim() !== c.title) {
-              await api(`/api/studio/chats/${c.id}`, { method: "PATCH", body: { title: input.value.trim() } }).catch((e) => toast(e.message, "error"));
-              if (state.chat?.id === c.id) state.chat.title = input.value.trim();
-            }
-            refreshChats();
-          };
-          input.addEventListener("keydown", (e) => { if (e.key === "Enter") finish(true); if (e.key === "Escape") finish(false); });
-          input.addEventListener("blur", () => finish(true));
-          item.replaceChildren(input);
-          input.focus(); input.select();
-        } }, icon(ICONS.edit));
-      const del = el("button", { class: "icon-btn", type: "button", "aria-label": "Delete chat", title: "Delete",
-        onclick: async () => {
-          await api(`/api/studio/chats/${c.id}`, { method: "DELETE" }).catch((e) => toast(e.message, "error"));
-          if (state.chat?.id === c.id) newChat();
-          refreshChats();
-        } }, icon(ICONS.trash));
-      item.append(link, rename, del);
-      nav.append(item);
+      nav.append(chatItem(c, false));
     }
+  }
+
+  function chatItem(c, nested) {
+    const active = state.view === "chat" && state.chat?.id === c.id;
+    const item = el("div", { class: "chat-item" + (active ? " active" : "") + (nested ? " nested" : "") });
+    const link = el("a", { href: "#" + c.id, text: c.title || "New chat", title: c.title,
+      "aria-current": active ? "page" : null, onclick: (e) => { e.preventDefault(); openChat(c.id); } });
+    const more = el("button", { class: "icon-btn", type: "button", "aria-label": `Options for ${c.title || "chat"}`,
+      "aria-haspopup": "menu", title: "Rename, move or delete", onclick: (e) => chatMenu(e.currentTarget, c, item) }, icon(ICONS.more));
+    item.append(link, more);
+    return item;
+  }
+
+  function renameChat(c, item) {
+    const input = el("input", { value: c.title, "aria-label": "Chat title" });
+    let done = false;
+    const finish = async (save) => {
+      if (done) return;
+      done = true;
+      if (save && input.value.trim() && input.value.trim() !== c.title) {
+        await api(`/api/studio/chats/${c.id}`, { method: "PATCH", body: { title: input.value.trim() } }).catch((e) => toast(e.message, "error"));
+        if (state.chat?.id === c.id) state.chat.title = input.value.trim();
+      }
+      refreshChats();
+    };
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") finish(true); if (e.key === "Escape") finish(false); });
+    input.addEventListener("blur", () => finish(true));
+    item.replaceChildren(input);
+    input.focus();
+    input.select();
+  }
+
+  async function deleteChat(c) {
+    try { await api(`/api/studio/chats/${c.id}`, { method: "DELETE" }); } catch (e) { return toast(e.message, "error"); }
+    if (state.chat?.id === c.id) newChat();
+    refreshChats();
+    refreshProjects();
+  }
+
+  function chatMenu(anchor, chat, item) {
+    const move = async (projectId) => {
+      closeMenu();
+      try {
+        await api(`/api/studio/chats/${chat.id}`, { method: "PATCH", body: { project_id: projectId } });
+        if (state.chat?.id === chat.id) { state.chat.project_id = projectId; renderCrumb(); }
+        const name = projectId ? projectById(projectId)?.name : null;
+        toast(name ? `Moved to ${name}` : "Moved out of the project");
+        await Promise.all([refreshChats(), refreshProjects()]);
+        if (state.view === "project" && state.project) openProject(state.project.id);
+      } catch (e) { toast(e.message, "error"); }
+    };
+    const items = [
+      el("button", { type: "button", role: "menuitem", onclick: () => { closeMenu(); renameChat(chat, item); } }, icon(ICONS.edit), el("span", { text: "Rename" })),
+      el("div", { class: "menu-title", text: "Move to project" }),
+      ...state.projects.map((p) => el("button", { type: "button", role: "menuitemradio", "aria-checked": String(chat.project_id === p.id),
+        onclick: () => move(p.id) }, icon(ICONS.folder), el("span", { text: p.name }))),
+      el("button", { type: "button", role: "menuitemradio", "aria-checked": String(!chat.project_id), onclick: () => move(null) },
+        icon(ICONS.x), el("span", { text: "No project" })),
+      el("button", { type: "button", role: "menuitem", onclick: async () => { closeMenu(); const p = await createProject(); if (p) move(p.id); } },
+        icon(ICONS.plus), el("span", { text: "New project…" })),
+      el("div", { class: "menu-sep", role: "separator" }),
+      el("button", { type: "button", role: "menuitem", class: "danger", onclick: () => { closeMenu(); deleteChat(chat); } },
+        icon(ICONS.trash), el("span", { text: "Delete chat" })),
+    ];
+    popover(anchor, items);
+  }
+
+  // ------------------------------------------------------------------ popover menu
+  let openMenu = null;
+  function closeMenu() { if (openMenu) { openMenu.remove(); openMenu = null; } }
+  function popover(anchor, children) {
+    closeMenu();
+    const menu = el("div", { class: "menu", role: "menu" }, ...children);
+    document.body.append(menu);
+    const r = anchor.getBoundingClientRect();
+    const top = Math.min(r.bottom + 4, window.innerHeight - menu.offsetHeight - 8);
+    menu.style.top = `${Math.max(8, top)}px`;
+    menu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - menu.offsetWidth - 8))}px`;
+    openMenu = menu;
+    menu.querySelector("button")?.focus();
+    return menu;
   }
 
   async function openChat(id) {
@@ -485,16 +596,31 @@
     try {
       state.chat = await api(`/api/studio/chats/${id}`);
       if (state.chat.model) selectModel(state.chat.model);
+      clearAttachments();
       show("chat");
       renderThread(true);
     } catch (e) { toast(e.message, "error"); }
   }
 
-  function newChat() {
+  function newChat(projectId = null) {
     if (state.abort) return toast("Wait for the answer to finish, or stop it first.");
     state.chat = null;
+    state.newChatProject = typeof projectId === "string" ? projectId : null;
+    const project = state.newChatProject ? projectById(state.newChatProject) : null;
+    if (project?.model && readyModels().some((m) => m.name === project.model)) selectModel(project.model);
+    clearAttachments();
     show("chat");
     renderThread();
+  }
+
+  function renderCrumb() {
+    const pid = state.chat ? state.chat.project_id : state.newChatProject;
+    const project = pid ? projectById(pid) : null;
+    $("#projectCrumb").hidden = $("#projectCrumbSep").hidden = !project;
+    if (project) {
+      $("#projectCrumbName").textContent = project.name;
+      $("#projectCrumb").title = `Open project ${project.name}`;
+    }
   }
 
   async function persistChat() {
@@ -503,13 +629,126 @@
     const messages = c.messages.filter((m) => !m.pending);
     try {
       if (!c.id) {
-        const created = await api("/api/studio/chats", { method: "POST", body: { title: c.title, model: c.model, messages } });
+        const created = await api("/api/studio/chats", { method: "POST", body: { title: c.title, model: c.model, messages, project_id: c.project_id || null } });
         c.id = created.id;
       } else {
         await api(`/api/studio/chats/${c.id}`, { method: "PATCH", body: { model: c.model, messages } });
       }
       refreshChats();
+      if (c.project_id) refreshProjects();
     } catch (e) { toast(`Could not save the chat: ${e.message}`, "error"); }
+  }
+
+  // ------------------------------------------------------------------ projects
+  async function refreshProjects() {
+    try { state.projects = (await api("/api/studio/projects")).projects; } catch { state.projects = []; }
+    renderChatList();
+    renderCrumb();
+  }
+
+  async function createProject() {
+    try {
+      const n = state.projects.length + 1;
+      const project = await api("/api/studio/projects", { method: "POST", body: { name: n > 1 ? `New project ${n}` : "New project" } });
+      await refreshProjects();
+      await openProject(project.id, true);
+      return project;
+    } catch (e) { toast(e.message, "error"); return null; }
+  }
+
+  async function openProject(id, focusName = false) {
+    if (state.abort) return toast("Wait for the answer to finish, or stop it first.");
+    try { state.project = await api(`/api/studio/projects/${id}`); } catch (e) { return toast(e.message, "error"); }
+    show("project");
+    renderProject();
+    if (focusName) { $("#projectName").focus(); $("#projectName").select(); }
+  }
+
+  const approxTokens = (bytes) => Math.round(bytes / 4);
+
+  function renderProject() {
+    const p = state.project;
+    if (!p) return;
+    $("#projectName").value = p.name;
+    $("#projectInstructions").value = p.instructions;
+    $("#instructionsState").textContent = "";
+
+    const chats = state.chats.filter((c) => c.project_id === p.id);
+    $("#projectChats").replaceChildren(...(chats.length ? chats.map((c) => el("div", { class: "row" },
+      el("a", { class: "name-link", href: "#" + c.id, text: c.title || "New chat", onclick: (e) => { e.preventDefault(); openChat(c.id); } }),
+      el("span", { class: "when", text: groupLabel(c.updated_at) })))
+      : [el("p", { class: "empty-row", text: "No chats yet. Start one with “New chat”: it will use this project’s instructions and files." })]));
+
+    $("#projectFiles").replaceChildren(...(p.files || []).map((f) => {
+      const actions = el("div", { class: "actions" });
+      actions.append(el("button", { class: "icon-btn", type: "button", "aria-label": `Remove ${f.name}`, title: "Remove",
+        onclick: () => confirmInline(actions, "Remove file?", () => deleteProjectFile(f.id)) }, icon(ICONS.trash)));
+      return el("div", { class: "row" },
+        el("div", {}, el("div", { class: "name", text: f.name }),
+          el("div", { class: "meta" }, el("span", { text: fmtBytes(f.size) }), el("span", { text: `~${approxTokens(f.size).toLocaleString()} tokens` }))),
+        actions);
+    }));
+    const ctx = state.settings?.defaults?.context_length || 4096;
+    const tokens = approxTokens((p.file_bytes || 0) + (p.instructions || "").length);
+    $("#projectBudget").textContent = p.file_count
+      ? `Instructions and files: about ${tokens.toLocaleString()} tokens. With a ${ctx.toLocaleString()}-token context, ${tokens > ctx / 2 ? "files are cut to fit about half of it (raise the context length in Settings if the model supports more)" : "they fit comfortably"}.`
+      : "";
+
+    const sel = $("#projectModel");
+    sel.replaceChildren(el("option", { value: "", text: "Whatever is selected in the chat" }),
+      ...readyModels().map((m) => el("option", { value: m.name, text: m.name })));
+    sel.value = readyModels().some((m) => m.name === p.model) ? p.model : "";
+    $("#projectDangerZone").replaceChildren(el("button", { type: "button", class: "btn danger", text: "Delete project",
+      onclick: () => confirmInline($("#projectDangerZone"),
+        p.chat_count ? `Delete the project and its ${p.chat_count} chat${p.chat_count > 1 ? "s" : ""}?` : "Delete the project?",
+        deleteProject) }));
+  }
+
+  async function saveProject(patch, quiet = false) {
+    const p = state.project;
+    try {
+      state.project = await api(`/api/studio/projects/${p.id}`, { method: "PATCH", body: patch });
+      await refreshProjects();
+      if (!quiet) renderProject();
+      return true;
+    } catch (e) { toast(e.message, "error"); return false; }
+  }
+
+  async function uploadProjectFiles(files) {
+    const p = state.project;
+    if (!p || !files.length) return;
+    let added = 0;
+    for (const file of files) {
+      try {
+        const res = await fetch(`/api/studio/projects/${p.id}/files?name=${encodeURIComponent(file.name)}`, { method: "POST", body: file });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || data.detail || `${res.status} ${res.statusText}`);
+        added++;
+      } catch (e) { toast(`${file.name}: ${e.message}`, "error"); }
+    }
+    if (added) toast(`Added ${added} file${added > 1 ? "s" : ""}`);
+    await openProject(p.id);
+    refreshProjects();
+  }
+
+  async function deleteProjectFile(fileId) {
+    const p = state.project;
+    try { await api(`/api/studio/projects/${p.id}/files/${fileId}`, { method: "DELETE" }); } catch (e) { toast(e.message, "error"); }
+    await openProject(p.id);
+    refreshProjects();
+  }
+
+  async function deleteProject() {
+    const p = state.project;
+    try {
+      await api(`/api/studio/projects/${p.id}`, { method: "DELETE" });
+      toast(`Deleted ${p.name}`);
+      state.project = null;
+      if (state.chat?.project_id === p.id) state.chat = null;
+      if (state.newChatProject === p.id) state.newChatProject = null;
+      await Promise.all([refreshProjects(), refreshChats()]);
+      newChat();
+    } catch (e) { toast(e.message, "error"); }
   }
 
   // ------------------------------------------------------------------ thread rendering
@@ -527,6 +766,15 @@
         el("button", { class: "btn primary", type: "button", text: "Browse models", onclick: () => show("models") }),
         pulling ? null : el("button", { class: "btn", type: "button", text: "Try SmolLM2 135M (270 MB)",
           onclick: () => { pull("HuggingFaceTB/SmolLM2-135M-Instruct"); show("models"); } }));
+    } else if (state.newChatProject && projectById(state.newChatProject)) {
+      const p = projectById(state.newChatProject);
+      const bits = [];
+      if (p.instructions) bits.push("its instructions");
+      if (p.file_count) bits.push(`${p.file_count} file${p.file_count > 1 ? "s" : ""}`);
+      box.append(el("h2", { text: `New chat in ${p.name}` }),
+        el("p", { text: bits.length ? `${currentModel()} will see ${bits.join(" and ")} from this project.`
+          : `This project has no instructions or files yet. Add them from the project page.` }),
+        el("button", { class: "btn", type: "button", text: "Open project", onclick: () => openProject(p.id) }));
     } else {
       box.append(el("h2", { text: "What should we work on?" }),
         el("p", { text: `Talking to ${state.model}. Large models read every layer from disk for each token, so answers arrive slowly but steadily; the meter above the message box shows the progress.` }));
@@ -534,10 +782,42 @@
     return box;
   }
 
+  function imageMime(b64) {
+    const magic = { "iVBOR": "image/png", "/9j/": "image/jpeg", "R0lG": "image/gif", "UklGR": "image/webp", "Qk": "image/bmp" };
+    for (const [prefix, mime] of Object.entries(magic)) if (b64.startsWith(prefix)) return mime;
+    return "image/png";
+  }
+
+  function lightbox(src) {
+    const close = () => { overlay.remove(); document.removeEventListener("keydown", onKey); };
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    const overlay = el("div", { class: "lightbox", role: "dialog", "aria-label": "Image", onclick: close },
+      el("img", { src, alt: "Attached image" }));
+    document.addEventListener("keydown", onKey);
+    document.body.append(overlay);
+  }
+
+  function mediaNode(m) {
+    const imgs = m.images || [], clips = m.audio || [];
+    if (!imgs.length && !clips.length) return null;
+    const box = el("div", { class: "media" });
+    for (const b64 of imgs) {
+      const src = `data:${imageMime(b64)};base64,${b64}`;
+      box.append(el("img", { src, alt: "Attached image", loading: "lazy", onclick: () => lightbox(src) }));
+    }
+    for (const b64 of clips) box.append(el("audio", { controls: true, src: "data:audio/wav;base64," + b64, preload: "none" }));
+    return box;
+  }
+
   function messageNode(m, index) {
     const node = el("div", { class: `msg ${m.role}${m.error ? " error" : ""}` });
     const body = el("div", { class: "body" });
-    if (m.role === "user") body.textContent = m.content;
+    if (m.role === "user") {
+      const media = mediaNode(m);
+      if (media) node.append(media);
+      body.textContent = m.content;
+      if (!m.content) body.hidden = true;
+    }
     else if (m.error) body.textContent = m.content;
     else if (m.pending && !m.content) body.append(el("span", { class: "waiting caret", text: m.statusText || "" }));
     else {
@@ -653,9 +933,18 @@
     if (!state.online) return toast("The AirLLM server is not reachable.", "error");
     const model = $("#modelSelect").value;
     if (!model) { show("models"); return toast("Pull a model first."); }
-    if (!state.chat) state.chat = { id: null, title: text.slice(0, 80).replace(/\s+/g, " "), model, messages: [] };
+    const images = state.attachments.filter((a) => a.kind === "image").map((a) => a.data);
+    const audio = state.attachments.filter((a) => a.kind === "audio").map((a) => a.data);
+    const title = text || (images.length ? "Image" : "Voice message");
+    if (!state.chat) state.chat = { id: null, title: title.slice(0, 80).replace(/\s+/g, " "), model, messages: [],
+      project_id: state.newChatProject || null };
     state.chat.model = model;
-    state.chat.messages.push({ role: "user", content: text });
+    const msg = { role: "user", content: text };
+    if (images.length) msg.images = images;
+    if (audio.length) msg.audio = audio;
+    clearAttachments();
+    state.chat.messages.push(msg);
+    renderCrumb();
     await generate();
   }
 
@@ -669,7 +958,8 @@
 
   async function generate() {
     const chat = state.chat;
-    const history = chat.messages.filter((m) => !m.error).map(({ role, content }) => ({ role, content }));
+    const history = chat.messages.filter((m) => !m.error).map(({ role, content, images, audio }) => ({
+      role, content, ...(images?.length ? { images } : {}), ...(audio?.length ? { audio } : {}) }));
     const answer = { role: "assistant", content: "", pending: true, model: chat.model, statusText: "" };
     chat.messages.push(answer);
     renderThread(true);
@@ -683,7 +973,8 @@
     try {
       const res = await fetch("/api/chat", {
         method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: chat.model, messages: history, stream: true, airllm_progress: true }),
+        body: JSON.stringify({ model: chat.model, messages: history, stream: true, airllm_progress: true,
+          airllm_project: chat.project_id || undefined }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -753,6 +1044,113 @@
       refreshStatus();
       $("#prompt").focus();
     }
+  }
+
+  // ------------------------------------------------------------------ attachments and voice
+  const MAX_IMAGE_BYTES = 20e6, MAX_IMAGES = 8, MAX_RECORD_SECONDS = 300;
+  const fmtClock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+
+  function readAsBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result).replace(/^data:[^,]*,/, ""));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  function clearAttachments() {
+    for (const a of state.attachments) if (a.url?.startsWith("blob:")) URL.revokeObjectURL(a.url);
+    state.attachments = [];
+    renderAttachments();
+  }
+
+  function renderAttachments() {
+    const box = $("#attachments");
+    box.hidden = !state.attachments.length;
+    box.replaceChildren(...state.attachments.map((a) => {
+      const remove = el("button", { class: "x", type: "button", "aria-label": `Remove ${a.name}`, title: "Remove",
+        onclick: () => { state.attachments = state.attachments.filter((x) => x !== a); renderAttachments(); } }, icon(ICONS.x));
+      return a.kind === "image"
+        ? el("div", { class: "att", title: a.name }, el("img", { src: a.url, alt: a.name }), remove)
+        : el("div", { class: "att audio", title: "Voice message" }, icon(ICONS.wave), el("span", { text: `Voice ${fmtClock(a.seconds)}` }), remove);
+    }));
+  }
+
+  async function addImages(files) {
+    const images = [...files].filter((f) => f.type.startsWith("image/"));
+    if (!images.length) return;
+    if (!modelCaps(currentModel()).includes("vision")) return toast(`${currentModel()} does not take images. Pick a vision model to attach them.`);
+    for (const f of images) {
+      if (state.attachments.filter((a) => a.kind === "image").length >= MAX_IMAGES) { toast(`Up to ${MAX_IMAGES} images per message.`); break; }
+      if (f.size > MAX_IMAGE_BYTES) { toast(`${f.name} is larger than 20 MB.`, "error"); continue; }
+      try { state.attachments.push({ kind: "image", data: await readAsBase64(f), url: URL.createObjectURL(f), name: f.name || "image" }); }
+      catch (e) { toast(`${f.name}: ${e.message}`, "error"); }
+    }
+    renderAttachments();
+    $("#prompt").focus();
+  }
+
+  // Browser recordings (webm/ogg) -> 16 kHz mono 16-bit WAV, what audio models' processors expect.
+  async function toWav16k(blob) {
+    const ctx = new AudioContext();
+    let decoded;
+    try { decoded = await ctx.decodeAudioData(await blob.arrayBuffer()); } finally { ctx.close(); }
+    const rate = 16000;
+    const offline = new OfflineAudioContext(1, Math.max(1, Math.ceil(decoded.duration * rate)), rate);
+    const source = offline.createBufferSource();
+    source.buffer = decoded;
+    source.connect(offline.destination);
+    source.start();
+    const pcm = (await offline.startRendering()).getChannelData(0);
+    const view = new DataView(new ArrayBuffer(44 + pcm.length * 2));
+    const text = (offset, str) => { for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)); };
+    text(0, "RIFF"); view.setUint32(4, 36 + pcm.length * 2, true); text(8, "WAVE"); text(12, "fmt ");
+    view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+    view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+    text(36, "data"); view.setUint32(40, pcm.length * 2, true);
+    for (let i = 0; i < pcm.length; i++) view.setInt16(44 + i * 2, Math.max(-1, Math.min(1, pcm[i])) * 0x7fff, true);
+    return { wav: new Blob([view.buffer], { type: "audio/wav" }), seconds: pcm.length / rate };
+  }
+
+  async function toggleRecording() {
+    if (state.recorder) { state.recorder.stop(); return; }
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return toast("This window cannot use the microphone.", "error");
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } }); }
+    catch (e) { return toast(`Microphone not available: ${e.message}`, "error"); }
+    const chunks = [];
+    const rec = new MediaRecorder(stream);
+    const started = performance.now();
+    const mic = $("#micBtn"), clock = $("#recTime");
+    const timer = setInterval(() => {
+      const secs = (performance.now() - started) / 1000;
+      clock.textContent = fmtClock(secs);
+      if (secs >= MAX_RECORD_SECONDS && rec.state === "recording") rec.stop();
+    }, 250);
+    rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    rec.onstop = async () => {
+      clearInterval(timer);
+      stream.getTracks().forEach((t) => t.stop());
+      state.recorder = null;
+      mic.classList.remove("recording");
+      mic.setAttribute("aria-label", "Record voice");
+      clock.hidden = true;
+      updateComposerTools();
+      try {
+        const { wav, seconds } = await toWav16k(new Blob(chunks, { type: rec.mimeType }));
+        if (seconds < 0.3) return toast("That recording was too short.");
+        state.attachments.push({ kind: "audio", data: await readAsBase64(wav), name: "voice.wav", seconds });
+        renderAttachments();
+        $("#prompt").focus();
+      } catch (e) { toast(`Could not use the recording: ${e.message}`, "error"); }
+    };
+    rec.start(250);
+    state.recorder = rec;
+    mic.classList.add("recording");
+    mic.setAttribute("aria-label", "Stop recording");
+    clock.textContent = "0:00";
+    clock.hidden = false;
   }
 
   // ------------------------------------------------------------------ settings
@@ -858,7 +1256,7 @@
   }
 
   function wire() {
-    $("#newChat").addEventListener("click", newChat);
+    $("#newChat").addEventListener("click", () => newChat());
     $("#navModels").addEventListener("click", () => show("models"));
     $("#navSettings").addEventListener("click", () => show("settings"));
     $("#openSidebar").addEventListener("click", () => $("#app").classList.add("menu-open"));
@@ -874,13 +1272,66 @@
     $("#composer").addEventListener("submit", (e) => {
       e.preventDefault();
       if (state.abort) { state.abort.abort(); return; }
+      if (state.recorder) return toast("Stop the recording first (click the microphone).");
       const text = prompt.value.trim();
-      if (!text) return;
+      if (!text && !state.attachments.length) return;
       prompt.value = "";
       autosize();
       send(text);
     });
+
+    // images: button, paste, drag and drop (only offered for vision models)
+    $("#attachBtn").addEventListener("click", () => $("#fileInput").click());
+    $("#fileInput").addEventListener("change", (e) => { addImages(e.target.files); e.target.value = ""; });
+    prompt.addEventListener("paste", (e) => {
+      const files = [...(e.clipboardData?.files || [])];
+      if (files.some((f) => f.type.startsWith("image/"))) { e.preventDefault(); addImages(files); }
+    });
+    const composer = $("#composer");
+    composer.addEventListener("dragover", (e) => {
+      if ([...(e.dataTransfer?.items || [])].some((i) => i.kind === "file")) { e.preventDefault(); composer.classList.add("dragover"); }
+    });
+    composer.addEventListener("dragleave", () => composer.classList.remove("dragover"));
+    composer.addEventListener("drop", (e) => {
+      composer.classList.remove("dragover");
+      if (e.dataTransfer?.files?.length) { e.preventDefault(); addImages(e.dataTransfer.files); }
+    });
+    $("#micBtn").addEventListener("click", toggleRecording);
+
+    // projects
+    $("#projectCrumb").addEventListener("click", () => {
+      const pid = state.chat ? state.chat.project_id : state.newChatProject;
+      if (pid) openProject(pid);
+    });
+    $("#projectNewChat").addEventListener("click", () => newChat(state.project?.id));
+    const nameInput = $("#projectName");
+    nameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") nameInput.blur(); if (e.key === "Escape") { nameInput.value = state.project?.name || ""; nameInput.blur(); } });
+    nameInput.addEventListener("change", () => {
+      const name = nameInput.value.trim();
+      if (!state.project) return;
+      if (!name) { nameInput.value = state.project.name; return; }
+      if (name !== state.project.name) saveProject({ name }, true);
+    });
+    $("#saveInstructions").addEventListener("click", async () => {
+      if (!state.project) return;
+      $("#instructionsState").textContent = "Saving…";
+      const ok = await saveProject({ instructions: $("#projectInstructions").value }, true);
+      $("#instructionsState").textContent = ok ? "Saved" : "";
+      if (ok) setTimeout(() => { if ($("#instructionsState").textContent === "Saved") $("#instructionsState").textContent = ""; }, 2500);
+    });
+    $("#projectModel").addEventListener("change", (e) => saveProject({ model: e.target.value }, true));
+    const drop = $("#dropzone");
+    drop.addEventListener("click", () => $("#projectFileInput").click());
+    drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("#projectFileInput").click(); } });
+    drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+    drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+    drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); uploadProjectFiles([...(e.dataTransfer?.files || [])]); });
+    $("#projectFileInput").addEventListener("change", (e) => { uploadProjectFiles([...e.target.files]); e.target.value = ""; });
+    document.addEventListener("click", (e) => {
+      if (openMenu && !openMenu.contains(e.target) && !e.target.closest('[aria-haspopup="menu"]')) closeMenu();
+    });
     document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && openMenu) { closeMenu(); return; }
       if (e.key === "Escape" && state.abort) state.abort.abort();
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "o") { e.preventDefault(); newChat(); }
     });
@@ -921,7 +1372,8 @@
   async function boot() {
     wire();
     renderThread();
-    await Promise.all([refreshStatus(), refreshModels(), refreshChats()]);
+    await Promise.all([refreshStatus(), refreshModels(), refreshChats(), refreshProjects(),
+      api("/api/studio/settings").then((st) => { state.settings = st; }).catch(() => {})]);
     renderThread();
     const id = location.hash.slice(1);
     if (id && state.chats.some((c) => c.id === id)) openChat(id);
@@ -929,7 +1381,7 @@
     setInterval(() => {
       const wasOnline = state.online;
       refreshStatus().then(() => {
-        if (!wasOnline && state.online) { refreshModels(); refreshChats(); }
+        if (!wasOnline && state.online) { refreshModels(); refreshChats(); refreshProjects(); }
         if (state.view === "chat" && (!state.chat || !state.chat.messages.length)) renderThread();
       });
     }, 4000);

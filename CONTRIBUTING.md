@@ -32,3 +32,7 @@ Rules of thumb:
   clashing with other projects' `tests` modules.
 * The root `requirements.txt` pins old versions (e.g. `bitsandbytes==0.39.0`, `peft@v0.3.0`) that no longer match
   `setup.py`'s `install_requires`; it could be marked as training-only or refreshed.
+* **Audio models in AirLLM.** AirLLM streams vision-language models with their vision tower kept resident
+  (Qwen3.5/3.8, Kimi K3), but no class keeps an audio encoder resident, so speech models (Qwen2-Audio, Voxtral,
+  Qwen-Omni) cannot run. A class per family with `resident: ['model.audio_tower', 'model.multi_modal_projector']`
+  and the language model's layer names would let Studio's voice input light up for them.

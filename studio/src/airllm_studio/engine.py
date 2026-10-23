@@ -63,6 +63,8 @@ class Engine:
         self.layer_total = 0
         self._gen_lock = threading.Lock()
         self._torch_info: dict | None = None
+        self._processor = None                  # multimodal models: loaded on first image/audio
+        self._manifest_loaded: Manifest | None = None
 
     # --- hardware ------------------------------------------------------------------------
     def hardware(self) -> dict:
@@ -145,6 +147,7 @@ class Engine:
             self.model = AutoModel.from_pretrained(manifest.snapshot_path, **kwargs)
             self._watch_layers()
             self.model_name, self.device, self.loaded_at = name, device, time.time()
+            self._manifest_loaded, self._processor = manifest, None
             self.state = "ready"
         except Exception:
             self.model, self.model_name, self.device, self.state = None, None, None, "idle"
@@ -174,6 +177,7 @@ class Engine:
         if executor is not None:
             executor.shutdown(wait=False)
         self.model, self.model_name, self.device, self.loaded_at = None, None, None, None
+        self._manifest_loaded, self._processor = None, None
         self.state = "idle"
         try:
             import gc
@@ -241,21 +245,92 @@ class Engine:
             else:
                 self.waiting -= 1
 
+    def _render(self, messages: list[dict], tok) -> str:
+        if getattr(tok, "chat_template", None):
+            plain = [{"role": m["role"], "content": m["content"]} for m in messages]
+            return tok.apply_chat_template(plain, tokenize=False, add_generation_prompt=True)
+        parts = [f"{m['role'].capitalize()}: {m['content']}" for m in messages]
+        return "\n".join(parts) + "\nAssistant:"
+
     def _encode(self, messages: list[dict], raw_prompt: str | None, limit: int):
+        """Token ids for the prompt, fitted to ``limit``.
+
+        Too long a conversation loses its oldest turns first; system messages (instructions and
+        project files) and the latest message are kept. Only if that is still too long is the
+        prompt cut from the front."""
         tok = self.model.tokenizer
-        if raw_prompt is not None:
-            text = raw_prompt
-        elif getattr(tok, "chat_template", None):
-            text = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        else:
-            parts = [f"{m['role'].capitalize()}: {m['content']}" for m in messages]
-            text = "\n".join(parts) + "\nAssistant:"
-        enc = tok(text, return_tensors="pt", add_special_tokens=raw_prompt is not None or
-                  not getattr(tok, "chat_template", None))
-        ids = enc["input_ids"]
+        templated = raw_prompt is None and bool(getattr(tok, "chat_template", None))
+
+        def ids_for(msgs):
+            text = raw_prompt if raw_prompt is not None else self._render(msgs, tok)
+            return tok(text, return_tensors="pt", add_special_tokens=not templated)["input_ids"]
+
+        ids = ids_for(messages)
+        if raw_prompt is None:
+            msgs = list(messages)
+            while ids.shape[1] > limit:
+                droppable = [i for i, m in enumerate(msgs[:-1]) if m["role"] != "system"]
+                if not droppable:
+                    break
+                del msgs[droppable[0]]
+                ids = ids_for(msgs)
         if ids.shape[1] > limit:                 # keep the most recent context
             ids = ids[:, -limit:]
         return ids
+
+    # --- images / audio ------------------------------------------------------------------
+    def capabilities(self) -> list[str]:
+        manifest = self._manifest_loaded
+        return list(manifest.capabilities) if manifest and manifest.capabilities else ["completion"]
+
+    def _get_processor(self):
+        if self._processor is None:
+            from transformers import AutoProcessor
+
+            manifest = self._manifest_loaded
+            if manifest is None or not manifest.snapshot_path:
+                raise EngineError("This model has no processor for images or audio.")
+            # Same opt-in as the model itself: a processor's own code runs only if the user allowed it.
+            self._processor = AutoProcessor.from_pretrained(
+                manifest.snapshot_path, trust_remote_code=bool(manifest.trust_remote_code))
+        return self._processor
+
+    def _multimodal_inputs(self, messages: list[dict], limit: int) -> dict:
+        """Chat with images/audio -> model inputs, via the model's own processor and chat template."""
+        import torch
+
+        from .media import load_image, load_wav
+
+        caps = self.capabilities()
+        if any(m.get("images") for m in messages) and "vision" not in caps:
+            raise EngineError(f"{self.model_name} does not take images.")
+        if any(m.get("audio") for m in messages) and "audio" not in caps:
+            raise EngineError(f"{self.model_name} does not take audio.")
+        proc = self._get_processor()
+        extractor = getattr(proc, "feature_extractor", None)
+        rate = int(getattr(extractor, "sampling_rate", 16000) or 16000)
+        conversation = []
+        for m in messages:
+            parts = [{"type": "image", "image": load_image(b)} for b in m.get("images", [])]
+            parts += [{"type": "audio", "audio": load_wav(b, rate)} for b in m.get("audio", [])]
+            if m["content"] or not parts:
+                parts.append({"type": "text", "text": m["content"]})
+            conversation.append({"role": m["role"], "content": parts})
+        inputs = proc.apply_chat_template(conversation, add_generation_prompt=True, tokenize=True,
+                                          return_dict=True, return_tensors="pt")
+        if inputs["input_ids"].shape[1] > limit:
+            raise EngineError("This conversation with its images/audio is longer than the context length. "
+                              "Start a new chat or raise the context length in Settings.")
+        dtype = getattr(self.model, "running_dtype", None)
+        device = torch.device(self.device or "cpu")
+        out = {}
+        for key, value in dict(inputs).items():
+            if isinstance(value, torch.Tensor):
+                value = value.to(device)
+                if value.is_floating_point() and dtype is not None:
+                    value = value.to(dtype)
+            out[key] = value
+        return out
 
     def _generate(self, messages, options: GenOptions, cancel: threading.Event,
                   raw_prompt: str | None, started: float, load_duration: float) -> Iterator[dict]:
@@ -264,9 +339,14 @@ class Engine:
 
         model, tok = self.model, self.model.tokenizer
         limit = max(16, options.context_length - options.max_new_tokens)
-        input_ids = self._encode(messages, raw_prompt, limit)
-        prompt_tokens = int(input_ids.shape[1])
         device = torch.device(self.device or "cpu")
+        if raw_prompt is None and any(m.get("images") or m.get("audio") for m in messages):
+            inputs = self._multimodal_inputs(messages, limit)
+            tok = getattr(self._get_processor(), "tokenizer", None) or tok
+        else:
+            input_ids = self._encode(messages, raw_prompt, limit).to(device)
+            inputs = {"input_ids": input_ids, "attention_mask": torch.ones_like(input_ids)}
+        prompt_tokens = int(inputs["input_ids"].shape[1])
         stop_now = threading.Event()
 
         class _Counter(StoppingCriteria):
@@ -284,8 +364,7 @@ class Engine:
         streamer = TextIteratorStreamer(tok, skip_prompt=True, skip_special_tokens=True, timeout=0.25)
         pad_id = tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id
         gen_kwargs = dict(
-            input_ids=input_ids.to(device),
-            attention_mask=torch.ones_like(input_ids).to(device),
+            **inputs,
             max_new_tokens=options.max_new_tokens,
             streamer=streamer,
             stopping_criteria=StoppingCriteriaList([counter]),

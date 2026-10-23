@@ -99,7 +99,7 @@ jobs:
       - name: AirLLM Studio unit tests
         run: |
           python3 -m venv /tmp/studio-venv
-          /tmp/studio-venv/bin/pip install -q fastapi uvicorn huggingface-hub pytest httpx
+          /tmp/studio-venv/bin/pip install -q fastapi uvicorn huggingface-hub pytest httpx pillow numpy scipy
           /tmp/studio-venv/bin/pip install -q --no-deps ./studio
           /tmp/studio-venv/bin/python -m pytest -q studio/tests
 

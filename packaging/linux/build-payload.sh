@@ -60,10 +60,12 @@ export PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1 PIP_NO_INPUT=1 PIP_ROO
 
 # --- 2. PyTorch, from its own index only -------------------------------------------------
 # Installing torch on its own (no --extra-index-url) keeps PyPI's much larger CUDA build out.
-log "Installing torch from $TORCH_INDEX_URL"
-"$py" -m pip install --index-url "$TORCH_INDEX_URL" torch
+# torchvision: the image processors of vision-language models need it (same index, matching build).
+log "Installing torch + torchvision from $TORCH_INDEX_URL"
+"$py" -m pip install --index-url "$TORCH_INDEX_URL" torch torchvision
 torch_version="$("$py" -c 'import importlib.metadata as m; print(m.version("torch"))')"
-printf 'torch==%s\n' "$torch_version" > "$work/constraints.txt"
+vision_version="$("$py" -c 'import importlib.metadata as m; print(m.version("torchvision"))')"
+printf 'torch==%s\ntorchvision==%s\n' "$torch_version" "$vision_version" > "$work/constraints.txt"
 
 # --- 3. AirLLM and the rest of its dependencies from PyPI, holding torch in place --------
 log "Installing $(basename "$wheel") + $(basename "$studio_wheel") (torch pinned at $torch_version)"
@@ -93,6 +95,7 @@ source_ref=${AIRLLM_SOURCE_REF:-unknown}
 source_sha=${AIRLLM_SOURCE_SHA:-unknown}
 python=$PYTHON_VERSION (python-build-standalone $PBS_RELEASE)
 torch=$torch_version
+torchvision=$vision_version
 arch=$arch
 built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF

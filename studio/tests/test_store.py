@@ -43,6 +43,12 @@ def _local_model(tmp_path):
 def test_local_import_runs_prepare_and_writes_manifest(home, tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(store_mod, "split_layers", lambda *a, **k: calls.append(a))
+
+    class TextOnly:
+        def set_layer_names_dict(self):
+            self.layer_names_dict = {"layer_prefix": "model.layers"}
+
+    monkeypatch.setattr(store_mod, "airllm_class_for", lambda *a, **k: TextOnly)
     st = ModelStore(lambda: tmp_path / "models", lambda: None)
     job = st.pull(str(_local_model(tmp_path)))
     events = list(job.events(timeout=0.1))
@@ -51,6 +57,7 @@ def test_local_import_runs_prepare_and_writes_manifest(home, tmp_path, monkeypat
     assert m.status == "ready" and m.source == "local" and m.context_length == 2048
     assert m.parameter_size == "2.0K"          # 4000 bytes of bf16
     assert calls and str(calls[0][0]).endswith("my-model")
+    assert m.capabilities == ["completion"]
 
 
 def test_failed_prepare_is_reported(home, tmp_path, monkeypatch):
@@ -82,3 +89,24 @@ def test_delete_removes_files(tmp_path):
     assert st.disk_usage(st.get("a/b")) == 4
     st.delete("a/b")
     assert not layers.exists() and st.get("a/b") is None
+
+
+def test_download_progress_follows_the_downloaders_byte_counts(monkeypatch):
+    """With Xet the *.incomplete file stays tiny while data arrives; progress must come from the
+    downloader's own bars (here: the 'reconstructing' and 'downloading bytes' bars of one file)."""
+    from airllm_studio.store import PullJob, _progress_kwargs
+
+    job = PullJob("org/m")
+    monkeypatch.setattr(store_mod.time, "monotonic", iter(range(10, 1000)).__next__)   # every call is 1 s later
+    kwargs = _progress_kwargs(job, base=1000, size=500)
+    if "tqdm_class" not in kwargs:
+        pytest.skip("huggingface-hub without tqdm_class: file-size watcher only")
+    bar_cls = kwargs["tqdm_class"]
+    disk = bar_cls(desc="f: reconstructing file", total=500, unit="B", disable=True)
+    net = bar_cls(desc="f: downloading bytes", total=500, unit="B", disable=True)
+    net.update(120)
+    assert job.completed == 1120
+    disk.update(50)                       # slower bar: the highest count wins, never goes back
+    assert job.completed == 1120
+    net.update(900)                       # more than the file size: clamped
+    assert job.completed == 1500

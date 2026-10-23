@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import queue
+import re
 import shutil
 import threading
 import time
@@ -29,7 +30,10 @@ SIDECAR_FILES = {
     "config.json", "generation_config.json", "tokenizer.json", "tokenizer_config.json",
     "special_tokens_map.json", "added_tokens.json", "vocab.json", "vocab.txt", "merges.txt",
     "tokenizer.model", "chat_template.json", "chat_template.jinja", "preprocessor_config.json",
+    "processor_config.json", "video_preprocessor_config.json",
 }
+# Image/audio processors; like config.json they may name custom code in an auto_map.
+PROCESSOR_FILES = ("preprocessor_config.json", "processor_config.json", "video_preprocessor_config.json")
 SIDECAR_SUFFIXES = (".py", ".tiktoken", ".model", ".jinja")
 DTYPE_BYTES = {"float32": 4, "float16": 2, "bfloat16": 2, "float8_e4m3fn": 1, "int8": 1, "uint8": 1}
 
@@ -43,11 +47,12 @@ class RemoteCodeRequired(StoreError):
 
 
 def remote_code_refs(folder: Path) -> list[str]:
-    """Classes a model wants loaded from its own code: the auto_map entries of its config.json and
-    tokenizer_config.json. transformers imports (= runs) these when trust_remote_code is on, which
-    AirLLM always passes; an entry may even point at code in another Hub repo ("org/repo--mod.Cls")."""
+    """Classes a model wants loaded from its own code: the auto_map entries of its config.json,
+    tokenizer_config.json and processor configs. transformers imports (= runs) these when
+    trust_remote_code is on, which AirLLM always passes; an entry may even point at code in another
+    Hub repo ("org/repo--mod.Cls")."""
     refs: set[str] = set()
-    for name in ("config.json", "tokenizer_config.json"):
+    for name in ("config.json", "tokenizer_config.json", *PROCESSOR_FILES):
         try:
             data = json.loads((folder / name).read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -98,6 +103,9 @@ class Manifest:
     original_deleted: bool = False
     trust_remote_code: bool = False     # the user allowed this model's own Python code to run
     needs_remote_code: bool = False     # the last pull stopped because the model ships code
+    # What the model takes as input, as AirLLM can run it: "completion" (text), "vision" (images),
+    # "audio". Empty = not detected yet (manifests written by Studio 1.0).
+    capabilities: list = field(default_factory=list)
     created_at: str = field(default_factory=now_iso)
     modified_at: str = field(default_factory=now_iso)
 
@@ -241,6 +249,23 @@ class ModelStore:
         tmp.write_text(json.dumps(manifest.to_dict(), indent=2), encoding="utf-8")
         os.replace(tmp, path)
 
+    def ensure_capabilities(self, manifest: Manifest) -> Manifest:
+        """Fill in capabilities for models pulled before they were tracked (Studio 1.0)."""
+        if manifest.capabilities or manifest.status != "ready":
+            return manifest
+        snapshot = Path(manifest.snapshot_path) if manifest.snapshot_path else None
+        try:
+            if snapshot is None or not (snapshot / "config.json").exists():
+                manifest.capabilities = ["completion"]
+                self.save(manifest)
+                return manifest
+            manifest.capabilities = capabilities_for(snapshot, self._hf_token())
+        except Exception as exc:  # noqa: BLE001 - fall back to text only, never fail a listing
+            log.warning("capability detection failed for %s: %s", manifest.name, exc)
+            manifest.capabilities = ["completion"]
+        self.save(manifest)
+        return manifest
+
     def _recover_interrupted(self) -> None:
         """Pulls cut off by a restart are marked as errors so the user can resume them."""
         try:
@@ -343,7 +368,7 @@ class ModelStore:
             watcher.start()
             try:
                 path = hf_hub_download(info.id, filename, revision=info.sha, cache_dir=str(hub),
-                                       token=token)
+                                       token=token, **_progress_kwargs(job, done_bytes, size))
             finally:
                 stop.set()
                 watcher.join()
@@ -374,7 +399,7 @@ class ModelStore:
                     partial += p.stat().st_size
             except OSError:
                 pass
-            job.update(completed=base + min(partial, size))
+            job.update(completed=max(job.completed, base + min(partial, size)))
 
     # --- prepare (AirLLM layer split) ------------------------------------------------------
     def _prepare(self, job: PullJob, manifest: Manifest) -> None:
@@ -392,6 +417,11 @@ class ModelStore:
         job.update(phase="preparing", message="Preparing layers for AirLLM (one-time)",
                    layers_total=expected, layers_done=0)
         split_dir = Path(manifest.layers_path) / split_dir_name(manifest.compression)
+        try:
+            manifest.capabilities = capabilities_for(snapshot, self._hf_token())
+        except Exception as exc:  # noqa: BLE001 - the split below reports real problems
+            log.warning("capability detection failed for %s: %s", manifest.name, exc)
+            manifest.capabilities = ["completion"]
         stop = threading.Event()
 
         def watch():
@@ -482,6 +512,45 @@ def split_dir_name(compression: str) -> str:
     return "splitted_model" if compression in ("", "none", None) else f"splitted_model.{compression}"
 
 
+def _progress_kwargs(job: "PullJob", base: int, size: int) -> dict:
+    """hf_hub_download arguments that feed real byte counts into the job.
+
+    Hugging Face's Xet downloader (hf_xet, installed with huggingface-hub) fetches chunks into its
+    own cache and only assembles the ``*.incomplete`` file later, so the size of that file stays near
+    zero while the network is busy. The downloader's progress bars do count the bytes: this reports
+    the highest count any of a file's bars has reached. Older huggingface-hub versions lack the
+    ``tqdm_class`` argument; they get no extra arguments and rely on the file-size watcher alone."""
+    import inspect
+
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.utils import tqdm as hub_tqdm
+
+    if "tqdm_class" not in inspect.signature(hf_hub_download).parameters:
+        return {}
+    seen = {}                    # bar id -> bytes counted so far
+    last_report = [0.0]
+
+    class ProgressBar(hub_tqdm):
+        def __init__(self, *args, **kwargs):
+            self._counted = int(kwargs.get("initial") or 0)
+            super().__init__(*args, **kwargs)
+            seen[id(self)] = self._counted
+
+        def update(self, n=1):   # also called when hub progress bars are disabled: count ourselves
+            self._counted += int(n or 0)
+            seen[id(self)] = self._counted
+            now = time.monotonic()
+            if now - last_report[0] >= 0.25:     # a few UI updates per second, not one per chunk
+                last_report[0] = now
+                job.update(completed=max(job.completed, base + min(max(seen.values()), size)))
+            return super().update(n)
+
+        def display(self, *args, **kwargs):   # the web UI draws progress; print nothing
+            return None
+
+    return {"tqdm_class": ProgressBar}
+
+
 def airllm_class_for(snapshot: Path, token: str | None = None):
     from airllm.auto_model import AutoModel
 
@@ -521,6 +590,55 @@ def delete_original_weights(snapshot: Path) -> bool:
             if real != path:
                 real.unlink(missing_ok=True)
     return True
+
+
+VISION_MODULES = re.compile(r"visual|vision|image|mm_projector|multi_modal_projector|vit\b", re.I)
+AUDIO_MODULES = re.compile(r"audio|speech|whisper|sound", re.I)
+
+
+def _declares_media(snapshot: Path) -> bool:
+    """Does config.json describe a vision or audio encoder at all? (cheap: no AirLLM import)"""
+    try:
+        raw = json.loads((snapshot / "config.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(raw, dict):
+        return False
+    thinker = raw.get("thinker_config") if isinstance(raw.get("thinker_config"), dict) else {}
+    keys = ("vision_config", "audio_config", "audio_encoder_config")
+    return any(raw.get(k) is not None or thinker.get(k) is not None for k in keys)
+
+
+def capabilities_for(snapshot: Path, token: str | None = None) -> list[str]:
+    """Capabilities of a pulled model. Text-only configs never load AirLLM's model class (which
+    imports torch and reads the config with trust_remote_code)."""
+    if not _declares_media(snapshot):
+        return ["completion"]
+    return detect_capabilities(snapshot, layer_names_for(airllm_class_for(snapshot, token)))
+
+
+def detect_capabilities(snapshot: Path, layer_names: dict | None) -> list[str]:
+    """Which inputs a model takes natively *and* AirLLM can feed it.
+
+    A checkpoint can carry a vision or audio encoder, but it only works under AirLLM when the
+    AirLLM class keeps that encoder resident (``layer_names['resident']``); otherwise it would stay
+    on the meta device. Both the config and the AirLLM class must agree, and the processor that
+    turns pixels or audio into model inputs must ship with the model."""
+    caps = ["completion"]
+    try:
+        raw = json.loads((snapshot / "config.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return caps
+    resident = " ".join((layer_names or {}).get("resident", []))
+    has_processor = any((snapshot / f).exists() for f in PROCESSOR_FILES[:2])   # image/audio, not video-only
+    if has_processor and raw.get("vision_config") is not None and VISION_MODULES.search(resident):
+        caps.append("vision")
+    thinker = raw.get("thinker_config") or {}
+    audio_cfg = any(cfg.get(key) is not None for cfg in (raw, thinker)
+                    for key in ("audio_config", "audio_encoder_config"))
+    if has_processor and audio_cfg and AUDIO_MODULES.search(resident):
+        caps.append("audio")
+    return caps
 
 
 def _config(snapshot: Path) -> dict:

@@ -127,14 +127,15 @@ def _code_model(tmp_path, where="config.json"):
     if where == "config.json":
         config["auto_map"] = auto_map
     else:
-        (folder / "tokenizer_config.json").write_text(json.dumps({"auto_map": auto_map}))
+        (folder / where).write_text(json.dumps({"auto_map": auto_map}))
     (folder / "config.json").write_text(json.dumps(config))
     (folder / "configuration_evil.py").write_text("raise SystemExit('model code ran')\n")
     (folder / "model.safetensors").write_bytes(b"\0" * 64)
     return folder
 
 
-@pytest.mark.parametrize("where", ["config.json", "tokenizer_config.json"])
+@pytest.mark.parametrize("where", ["config.json", "tokenizer_config.json", "preprocessor_config.json",
+                                   "processor_config.json"])
 def test_remote_code_refs(tmp_path, where):
     refs = remote_code_refs(_code_model(tmp_path, where))
     assert refs == ["configuration_evil.EvilConfig", "other/repo--tokenization_evil.EvilTokenizer"]

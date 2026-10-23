@@ -76,10 +76,12 @@ try {
     $env:PIP_DISABLE_PIP_VERSION_CHECK = '1'; $env:PIP_NO_CACHE_DIR = '1'; $env:PIP_NO_INPUT = '1'
 
     # --- 2. PyTorch from its own index only, then 3. airllm with torch held in place -----
-    Write-Host "==> Installing torch from $($cfg.TORCH_INDEX_URL)"
-    & $py -m pip install --no-warn-script-location --index-url $cfg.TORCH_INDEX_URL torch
+    # torchvision: the image processors of vision-language models need it (same index, matching build).
+    Write-Host "==> Installing torch + torchvision from $($cfg.TORCH_INDEX_URL)"
+    & $py -m pip install --no-warn-script-location --index-url $cfg.TORCH_INDEX_URL torch torchvision
     $torchVersion = & $py -c "import importlib.metadata as m; print(m.version('torch'))"
-    Set-Content -Path "$work/constraints.txt" -Value "torch==$torchVersion" -Encoding ascii
+    $visionVersion = & $py -c "import importlib.metadata as m; print(m.version('torchvision'))"
+    Set-Content -Path "$work/constraints.txt" -Value "torch==$torchVersion`ntorchvision==$visionVersion" -Encoding ascii
 
     Write-Host "==> Installing $(Split-Path -Leaf $Wheel) + $(Split-Path -Leaf $StudioWheel) (torch pinned at $torchVersion)"
     & $py -m pip install --no-warn-script-location --constraint "$work/constraints.txt" $Wheel $StudioWheel
@@ -100,6 +102,7 @@ AirLLM for Windows, packaged by $($cfg.PKG_VENDOR) ($($cfg.PKG_HOMEPAGE)).
 AirLLM itself: https://github.com/$($cfg.UPSTREAM_REPO) - licensed under the Apache License 2.0 below.
 Bundled third-party components (CPython, PyTorch, transformers, ...) keep their own licences;
 see python\Lib\site-packages\*\licenses and python\LICENSE.txt.
+AirLLM Studio is an independent project and is not affiliated with or endorsed by the AirLLM authors.
 
 "@
     Set-Content -Encoding utf8 -Path (Join-Path $Stage 'LICENSE.txt') -Value ($notice + (Get-Content -Raw $License))
@@ -117,6 +120,7 @@ see python\Lib\site-packages\*\licenses and python\LICENSE.txt.
         "source_sha=$($env:AIRLLM_SOURCE_SHA)"
         "python=$($cfg.PYTHON_VERSION) (python-build-standalone $($cfg.PBS_RELEASE))"
         "torch=$torchVersion"
+        "torchvision=$visionVersion"
         "arch=x86_64"
         "built_at=$((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))"
     ) | Set-Content -Encoding utf8 (Join-Path $Stage 'share\airllm\BUILDINFO')

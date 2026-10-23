@@ -45,6 +45,11 @@
           <button class="icon-btn only-narrow" id="openSidebar" aria-label="Open menu">
             <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6h14M3 10h14M3 14h14"/></svg>
           </button>
+          <button class="crumb" id="projectCrumb" type="button" hidden>
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6.5V15a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1h-6.2L8.3 5H4a1 1 0 0 0-1 1.5z"/></svg>
+            <span id="projectCrumbName"></span>
+          </button>
+          <span class="crumb-sep" id="projectCrumbSep" hidden aria-hidden="true">/</span>
           <label class="model-picker">
             <span class="visually-hidden">Model</span>
             <select id="modelSelect"></select>
@@ -60,14 +65,77 @@
             <div class="meter-label" id="meterLabel" role="status" aria-live="polite"></div>
           </div>
           <form class="composer" id="composer">
-            <label class="visually-hidden" for="prompt">Message</label>
-            <textarea id="prompt" rows="1" placeholder="Message" autocomplete="off"></textarea>
-            <button type="submit" class="send" id="sendBtn" aria-label="Send">
+            <div class="attachments" id="attachments" hidden></div>
+            <div class="composer-row">
+              <button type="button" class="icon-btn tool" id="attachBtn" hidden aria-label="Attach images" title="Attach images (this model reads images)">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 9.5l-5.6 5.6a3.6 3.6 0 0 1-5.1-5.1l6-6a2.4 2.4 0 0 1 3.4 3.4l-6 6a1.2 1.2 0 0 1-1.7-1.7l5.5-5.5"/></svg>
+              </button>
+              <input type="file" id="fileInput" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" multiple hidden>
+              <button type="button" class="icon-btn tool" id="micBtn" hidden aria-label="Record voice" title="Record voice (this model understands audio)">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7.5" y="3" width="5" height="9" rx="2.5"/><path d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5"/></svg>
+              </button>
+              <span class="rec-time" id="recTime" hidden role="status"></span>
+              <label class="visually-hidden" for="prompt">Message</label>
+              <textarea id="prompt" rows="1" placeholder="Message" autocomplete="off"></textarea>
+              <button type="submit" class="send" id="sendBtn" aria-label="Send">
               <svg viewBox="0 0 20 20" aria-hidden="true" class="i-send"><path d="M10 16V4M5 9l5-5 5 5"/></svg>
               <svg viewBox="0 0 20 20" aria-hidden="true" class="i-stop"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/></svg>
-            </button>
+              </button>
+            </div>
           </form>
           <p class="composer-hint">Enter to send, Shift+Enter for a new line, Esc to stop.</p>
+        </div>
+      </section>
+
+      <!-- Project -->
+      <section class="view page" id="view-project" hidden aria-label="Project">
+        <header class="page-head project-head">
+          <button class="icon-btn only-narrow" data-open-sidebar aria-label="Open menu">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6h14M3 10h14M3 14h14"/></svg>
+          </button>
+          <label class="visually-hidden" for="projectName">Project name</label>
+          <input class="title-input" id="projectName" maxlength="80" autocomplete="off" spellcheck="false">
+          <button type="button" class="btn primary" id="projectNewChat">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>New chat
+          </button>
+        </header>
+        <div class="page-body">
+          <p class="help">Chats in a project share its instructions and files: the model sees them at the start of every chat here.</p>
+          <section class="block">
+            <h2>Chats</h2>
+            <div class="rows" id="projectChats"></div>
+          </section>
+          <section class="block">
+            <h2>Instructions</h2>
+            <label class="field wide"><span class="visually-hidden">Project instructions</span>
+              <textarea id="projectInstructions" rows="5" placeholder="How should the model work in this project? e.g. “You help write release notes for AirLLM. Keep answers short and in British English.”"></textarea>
+            </label>
+            <div class="inline-save"><button type="button" class="btn small" id="saveInstructions">Save instructions</button><span class="save-state" id="instructionsState" role="status"></span></div>
+          </section>
+          <section class="block">
+            <h2>Files</h2>
+            <p class="help">Text files only (code, Markdown, CSV, JSON, notes). They are added to every chat in this project, so keep them focused: they count against the model’s context length.</p>
+            <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Add files">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 13V4M6 8l4-4 4 4M4 13v2.5h12V13"/></svg>
+              <span>Drop text files here or <u>choose files</u></span>
+            </div>
+            <input type="file" id="projectFileInput" multiple hidden>
+            <div class="rows" id="projectFiles"></div>
+            <p class="help" id="projectBudget"></p>
+          </section>
+          <section class="block">
+            <h2>Model</h2>
+            <label class="field narrow">Default model for new chats
+              <select id="projectModel"></select>
+            </label>
+          </section>
+          <section class="block">
+            <h2>Delete project</h2>
+            <p class="help">Deletes the project, its files and all of its chats.</p>
+            <div class="actions" id="projectDangerZone">
+              <button type="button" class="btn danger" id="deleteProject">Delete project</button>
+            </div>
+          </section>
         </div>
       </section>
 
@@ -158,6 +226,7 @@
           <section class="block">
             <h2>About</h2>
             <dl class="about" id="about"></dl>
+            <p class="help">AirLLM Studio is an independent community project by RudraLabs. It is not affiliated with, sponsored or endorsed by the authors of <a href="https://github.com/lyogavin/airllm" target="_blank" rel="noopener">AirLLM</a>, which runs the models and is used under the Apache License 2.0. &ldquo;AirLLM&rdquo; belongs to its owners.</p>
             <div class="actions">
               <button type="button" class="btn" data-open="models">Open models folder</button>
               <button type="button" class="btn" data-open="logs">Open logs</button>

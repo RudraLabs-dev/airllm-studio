@@ -21,7 +21,9 @@ def main() -> int:
         warnings.simplefilter("always")
         import airllm  # noqa: F401
         from airllm import AutoModel  # noqa: F401  # the public entry point must exist
+        import PIL
         import torch
+        import torchvision        # image processors of vision-language models
         import transformers
 
     optional = [str(w.message) for w in caught if "optional model class" in str(w.message)]
@@ -35,6 +37,8 @@ def main() -> int:
         "torch": torch.__version__,
         "torch_cuda": torch.version.cuda or "cpu",
         "transformers": transformers.__version__,
+        "torchvision": torchvision.__version__,
+        "pillow": PIL.__version__,
     }
     for key, value in report.items():
         print(f"{key:>14}: {value}")

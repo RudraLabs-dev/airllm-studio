@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "airllm-studio"
-version = "1.0.1"
+version = "1.1.0"
 description = "AirLLM Studio: local server, CLI and desktop app for running large LLMs with AirLLM"
 readme = "README.md"
 license = "Apache-2.0"
@@ -15,8 +15,8 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "huggingface-hub>=0.23",
+    "pillow>=10",                       # images for vision models (and the Windows tray icon)
     "pystray>=0.19; sys_platform == 'win32'",
-    "pillow>=10; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

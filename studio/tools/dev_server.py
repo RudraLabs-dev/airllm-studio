@@ -36,9 +36,11 @@ def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 11435
     settings = SettingsStore()
     store = ModelStore(settings.models_dir, settings.hf_token)
-    for name, params, size, ctx in [("Qwen/Qwen3-8B", "8.2B", 16_400_000_000, 40960),
-                                    ("meta-llama/Llama-3.3-70B-Instruct", "70B", 141_000_000_000, 131072)]:
-        store.save(Manifest(name=name, repo=name, status="ready", parameter_size=params,
+    for name, params, size, ctx, caps in [
+            ("Qwen/Qwen3-8B", "8.2B", 16_400_000_000, 40960, ["completion"]),
+            ("Qwen/Qwen3.8-27B", "27B", 55_000_000_000, 262144, ["completion", "vision"]),
+            ("meta-llama/Llama-3.3-70B-Instruct", "70B", 141_000_000_000, 131072, ["completion"])]:
+        store.save(Manifest(name=name, repo=name, status="ready", parameter_size=params, capabilities=caps,
                             size_on_disk=size, context_length=ctx, model_type="llama"))
     store.save(Manifest(name="Qwen/Qwen3-32B", repo="Qwen/Qwen3-32B", status="downloading"))
     job = PullJob("Qwen/Qwen3-32B")
@@ -49,6 +51,14 @@ def main():
         {"role": "user", "content": "How does layer streaming work?"},
         {"role": "assistant", "content": SlowFake.reply, "stats": {"tokens": 64, "tps": 0.42, "seconds": 152}}])
     chats.create("Draft a release note", "Qwen/Qwen3-8B", [])
+    project = chats.create_project("AirLLM docs", "You help write AirLLM documentation. Keep answers short.",
+                                   "Qwen/Qwen3-8B")
+    chats.add_file(project["id"], "README.md", b"# AirLLM\nRuns 70B models on a 4GB GPU by streaming layers.\n")
+    chats.add_file(project["id"], "style-guide.md", b"Use British English. Prefer short sentences.\n" * 40)
+    chats.create("Outline the install guide", "Qwen/Qwen3-8B", [
+        {"role": "user", "content": "Outline the install guide"},
+        {"role": "assistant", "content": "1. Download the package\n2. Install it\n3. Pull a model",
+         "stats": {"tokens": 18, "tps": 0.5, "seconds": 36}}], project_id=project["id"])
     studio = Studio(settings=settings, store=store, engine=SlowFake(store, settings), chats=chats)
     print(f"dev UI on http://127.0.0.1:{port}  (home {os.environ['AIRLLM_HOME']})", flush=True)
     time.sleep(0)
