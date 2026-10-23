@@ -102,6 +102,7 @@ AirLLM for Windows, packaged by $($cfg.PKG_VENDOR) ($($cfg.PKG_HOMEPAGE)).
 AirLLM itself: https://github.com/$($cfg.UPSTREAM_REPO) - licensed under the Apache License 2.0 below.
 Bundled third-party components (CPython, PyTorch, transformers, ...) keep their own licences;
 see python\Lib\site-packages\*\licenses and python\LICENSE.txt.
+AirLLM Studio is an independent project and is not affiliated with or endorsed by the AirLLM authors.
 
 "@
     Set-Content -Encoding utf8 -Path (Join-Path $Stage 'LICENSE.txt') -Value ($notice + (Get-Content -Raw $License))

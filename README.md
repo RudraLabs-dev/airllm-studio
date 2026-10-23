@@ -10,6 +10,10 @@ One self-contained installer for Linux and Windows: no Python, pip or CUDA setup
 [![Lint](https://github.com/RudraLabs-dev/airllm-studio/actions/workflows/lint.yml/badge.svg)](https://github.com/RudraLabs-dev/airllm-studio/actions/workflows/lint.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
+> **Independent project.** AirLLM Studio is made by [RudraLabs](https://github.com/RudraLabs-dev) and is not affiliated with,
+> sponsored or endorsed by the authors of [AirLLM](https://github.com/lyogavin/airllm). AirLLM is used unmodified under the
+> Apache License 2.0; "AirLLM" is the name of that project and belongs to its owners.
+
 ## Download
 
 **[Latest release →](https://github.com/RudraLabs-dev/airllm-studio/releases/latest)**
