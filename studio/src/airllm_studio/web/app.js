@@ -160,7 +160,8 @@
     chats: [],
     chat: null,                 // { id, title, model, messages: [{role, content, stats?, model?}] }
     model: store.get("model", ""),
-    abort: null,
+    abort: null,                // AbortController of the answer being written (one at a time)
+    run: null,                  // { chat, meter } of that answer; it keeps going while you browse
     settings: null,
     catalog: [],
     online: true,
@@ -173,6 +174,17 @@
 
   const readyModels = () => state.models.filter((m) => m.status === "ready");
 
+  // An answer keeps being written while you look at other chats, projects or pages. These tell
+  // whether it is the thing on screen, so only then do the thread, the layer meter and the
+  // stop button follow it.
+  const runVisible = () => !!state.run && state.view === "chat" && state.chat === state.run.chat;
+  const isRunning = (chatId) => !!chatId && state.run?.chat.id === chatId;
+  function syncRun() {
+    setBusy(runVisible());
+    if (runVisible() && state.run.meter) meter[state.run.meter[0]](...state.run.meter[1]);
+    else meter.hide();
+  }
+
   // ------------------------------------------------------------------ views
   function show(view) {
     state.view = view;
@@ -183,6 +195,7 @@
     if (view === "models") refreshModels().then(renderDiscover);
     if (view === "settings") loadSettings();
     if (view === "chat") { renderCrumb(); $("#prompt").focus(); }
+    syncRun();
     renderChatList();
   }
 
@@ -462,9 +475,15 @@
   }
 
   // ------------------------------------------------------------------ chats
+  // The sidebar and, when it is open, the project page list the same chats.
+  function renderLists() {
+    renderChatList();
+    if (state.view === "project") renderProjectChats();
+  }
+
   async function refreshChats() {
     try { state.chats = (await api("/api/studio/chats")).chats; } catch { state.chats = []; }
-    renderChatList();
+    renderLists();
   }
 
   function groupLabel(ts) {
@@ -495,8 +514,10 @@
     for (const p of state.projects) {
       const open = p.id === expanded;
       const active = state.view === "project" && state.project?.id === p.id;
-      const item = el("div", { class: "chat-item project-item" + (open ? " open" : "") + (active ? " active" : "") },
-        el("a", { href: "#", title: p.name, "aria-current": active ? "page" : null, "aria-expanded": String(open),
+      // A collapsed project still shows that one of its chats is being answered.
+      const busy = !open && state.run?.chat.project_id === p.id;
+      const item = el("div", { class: "chat-item project-item" + (open ? " open" : "") + (active ? " active" : "") + (busy ? " running" : "") },
+        el("a", { href: "#", title: busy ? `${p.name} (writing an answer)` : p.name, "aria-current": active ? "page" : null, "aria-expanded": String(open),
           onclick: (e) => { e.preventDefault(); openProject(p.id); } }, icon(ICONS.folder), el("span", { text: p.name })));
       nav.append(item);
       if (open) for (const c of state.chats.filter((c) => c.project_id === p.id)) nav.append(chatItem(c, true));
@@ -512,8 +533,8 @@
 
   function chatItem(c, nested) {
     const active = state.view === "chat" && state.chat?.id === c.id;
-    const item = el("div", { class: "chat-item" + (active ? " active" : "") + (nested ? " nested" : "") });
-    const link = el("a", { href: "#" + c.id, text: c.title || "New chat", title: c.title,
+    const item = el("div", { class: "chat-item" + (active ? " active" : "") + (nested ? " nested" : "") + (isRunning(c.id) ? " running" : "") });
+    const link = el("a", { href: "#" + c.id, text: c.title || "New chat", title: isRunning(c.id) ? `${c.title} (writing an answer)` : c.title,
       "aria-current": active ? "page" : null, onclick: (e) => { e.preventDefault(); openChat(c.id); } });
     const more = el("button", { class: "icon-btn", type: "button", "aria-label": `Options for ${c.title || "chat"}`,
       "aria-haspopup": "menu", title: "Rename, move or delete", onclick: (e) => chatMenu(e.currentTarget, c, item) }, icon(ICONS.more));
@@ -540,7 +561,12 @@
     input.select();
   }
 
+  function stopRunIf(matches) {
+    if (state.run && matches(state.run.chat)) { state.run.chat.deleted = true; state.abort.abort(); }
+  }
+
   async function deleteChat(c) {
+    stopRunIf((chat) => chat.id === c.id);
     try { await api(`/api/studio/chats/${c.id}`, { method: "DELETE" }); } catch (e) { return toast(e.message, "error"); }
     if (state.chat?.id === c.id) newChat();
     refreshChats();
@@ -592,9 +618,9 @@
   }
 
   async function openChat(id) {
-    if (state.abort) return toast("Wait for the answer to finish, or stop it first.");
     try {
-      state.chat = await api(`/api/studio/chats/${id}`);
+      // The chat being answered right now is shown from memory: the saved copy lacks the live answer.
+      state.chat = isRunning(id) ? state.run.chat : await api(`/api/studio/chats/${id}`);
       if (state.chat.model) selectModel(state.chat.model);
       clearAttachments();
       show("chat");
@@ -603,7 +629,6 @@
   }
 
   function newChat(projectId = null) {
-    if (state.abort) return toast("Wait for the answer to finish, or stop it first.");
     state.chat = null;
     state.newChatProject = typeof projectId === "string" ? projectId : null;
     const project = state.newChatProject ? projectById(state.newChatProject) : null;
@@ -623,9 +648,8 @@
     }
   }
 
-  async function persistChat() {
-    const c = state.chat;
-    if (!c) return;
+  async function persistChat(c = state.chat) {
+    if (!c || c.deleted) return;
     const messages = c.messages.filter((m) => !m.pending);
     try {
       if (!c.id) {
@@ -657,7 +681,6 @@
   }
 
   async function openProject(id, focusName = false) {
-    if (state.abort) return toast("Wait for the answer to finish, or stop it first.");
     try { state.project = await api(`/api/studio/projects/${id}`); } catch (e) { return toast(e.message, "error"); }
     show("project");
     renderProject();
@@ -666,6 +689,16 @@
 
   const approxTokens = (bytes) => Math.round(bytes / 4);
 
+  function renderProjectChats() {
+    const p = state.project;
+    if (!p) return;
+    const chats = state.chats.filter((c) => c.project_id === p.id);
+    $("#projectChats").replaceChildren(...(chats.length ? chats.map((c) => el("div", { class: "row" + (isRunning(c.id) ? " running" : "") },
+      el("a", { class: "name-link", href: "#" + c.id, text: c.title || "New chat", onclick: (e) => { e.preventDefault(); openChat(c.id); } }),
+      el("span", { class: "when", text: isRunning(c.id) ? "Writing an answer…" : groupLabel(c.updated_at) })))
+      : [el("p", { class: "empty-row", text: "No chats yet. Start one with “New chat”: it will use this project’s instructions and files." })]));
+  }
+
   function renderProject() {
     const p = state.project;
     if (!p) return;
@@ -673,11 +706,7 @@
     $("#projectInstructions").value = p.instructions;
     $("#instructionsState").textContent = "";
 
-    const chats = state.chats.filter((c) => c.project_id === p.id);
-    $("#projectChats").replaceChildren(...(chats.length ? chats.map((c) => el("div", { class: "row" },
-      el("a", { class: "name-link", href: "#" + c.id, text: c.title || "New chat", onclick: (e) => { e.preventDefault(); openChat(c.id); } }),
-      el("span", { class: "when", text: groupLabel(c.updated_at) })))
-      : [el("p", { class: "empty-row", text: "No chats yet. Start one with “New chat”: it will use this project’s instructions and files." })]));
+    renderProjectChats();
 
     $("#projectFiles").replaceChildren(...(p.files || []).map((f) => {
       const actions = el("div", { class: "actions" });
@@ -740,6 +769,7 @@
 
   async function deleteProject() {
     const p = state.project;
+    stopRunIf((chat) => chat.project_id === p.id);
     try {
       await api(`/api/studio/projects/${p.id}`, { method: "DELETE" });
       toast(`Deleted ${p.name}`);
@@ -945,28 +975,37 @@
     clearAttachments();
     state.chat.messages.push(msg);
     renderCrumb();
-    await generate();
+    const chat = state.chat;
+    // Save a new chat right away: it then shows in the sidebar and its project, so you can leave
+    // it while the answer is written and come back to it.
+    if (!chat.id) await persistChat(chat);
+    await generate(chat);
   }
 
   async function regenerate() {
-    if (state.abort || !state.chat) return;
+    if (!state.chat) return;
+    if (state.run) return toast("An answer is still being written. Wait for it, or stop it first.");
     const msgs = state.chat.messages;
     while (msgs.length && msgs[msgs.length - 1].role === "assistant") msgs.pop();
     if (!msgs.length) return;
-    await generate();
+    await generate(state.chat);
   }
 
-  async function generate() {
-    const chat = state.chat;
+  async function generate(chat) {
     const history = chat.messages.filter((m) => !m.error).map(({ role, content, images, audio }) => ({
       role, content, ...(images?.length ? { images } : {}), ...(audio?.length ? { audio } : {}) }));
     const answer = { role: "assistant", content: "", pending: true, model: chat.model, statusText: "" };
     chat.messages.push(answer);
-    renderThread(true);
-    setBusy(true);
-    meter.indeterminate("Starting…");
     const controller = new AbortController();
+    const run = state.run = { chat, meter: null };
     state.abort = controller;
+    // Meter and thread are only touched while this chat is on screen; syncRun() repaints them on return.
+    const paintMeter = (fn, ...args) => { run.meter = [fn, args]; if (runVisible()) meter[fn](...args); };
+    const paintAnswer = () => { if (runVisible()) updateLastMessage(); };
+    if (runVisible()) renderThread(true);
+    syncRun();
+    paintMeter("indeterminate", "Starting…");
+    renderLists();
     const started = performance.now();
     let firstTokenAt = 0, tokens = 0, finalStats = null;
 
@@ -997,20 +1036,20 @@
           if (ev.status) {
             answer.statusText = ev.status === "loading" ? "Loading the model…"
               : ev.status === "queued" ? "Waiting for another answer to finish…" : "Thinking…";
-            meter.indeterminate(answer.statusText);
-            if (!answer.content) updateLastMessage();
+            paintMeter("indeterminate", answer.statusText);
+            if (!answer.content) paintAnswer();
           }
           if (ev.progress) {
             tokens = ev.progress.tokens;
             const secs = firstTokenAt ? (performance.now() - firstTokenAt) / 1000 : 0;
-            meter.progress(ev.progress.layer, ev.progress.layers, tokens, secs > 0 && tokens > 1 ? (tokens - 1) / secs : 0);
+            paintMeter("progress", ev.progress.layer, ev.progress.layers, tokens, secs > 0 && tokens > 1 ? (tokens - 1) / secs : 0);
           }
           const piece = ev.message?.content;
           if (piece) {
             if (!firstTokenAt) firstTokenAt = performance.now();
             answer.content += piece;
             const now = performance.now();
-            if (now - lastPaint > 60) { updateLastMessage(); lastPaint = now; }
+            if (now - lastPaint > 60) { paintAnswer(); lastPaint = now; }
           }
           if (ev.done) finalStats = ev;
         }
@@ -1020,10 +1059,14 @@
         if (!answer.content) {
           answer.error = true;
           answer.content = e.message;
-        } else toast(e.message, "error");
+        }
+        if (answer.content !== e.message || !runVisible()) toast(runVisible() ? e.message : `“${chat.title}”: ${e.message}`, "error");
       }
     } finally {
+      const onScreen = runVisible();
       state.abort = null;
+      state.run = null;
+      renderLists();              // the "writing" marker goes now, not after the save round trip
       answer.pending = false;
       delete answer.statusText;
       const seconds = (performance.now() - started) / 1000;
@@ -1039,10 +1082,9 @@
       }
       setBusy(false);
       meter.hide();
-      updateLastMessage();
-      if (!answer.error || chat.messages.length > 2) persistChat();
+      if (onScreen) { updateLastMessage(); $("#prompt").focus(); }
+      if (!answer.error || chat.messages.length > 2) persistChat(chat);
       refreshStatus();
-      $("#prompt").focus();
     }
   }
 
@@ -1271,7 +1313,11 @@
     });
     $("#composer").addEventListener("submit", (e) => {
       e.preventDefault();
-      if (state.abort) { state.abort.abort(); return; }
+      if (state.run) {
+        if (runVisible()) state.abort.abort();
+        else toast(`An answer is still being written in “${state.run.chat.title}”. Open that chat to stop it, or wait.`);
+        return;
+      }
       if (state.recorder) return toast("Stop the recording first (click the microphone).");
       const text = prompt.value.trim();
       if (!text && !state.attachments.length) return;
@@ -1332,7 +1378,7 @@
     });
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && openMenu) { closeMenu(); return; }
-      if (e.key === "Escape" && state.abort) state.abort.abort();
+      if (e.key === "Escape" && runVisible()) state.abort.abort();
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "o") { e.preventDefault(); newChat(); }
     });
 

@@ -48,7 +48,8 @@ Jump to: [Starting](#starting-the-app) · [Downloading models](#downloading-and-
 | Out of GPU memory | Same remedies; or choose `cpu` in **Settings, Run models on** to confirm. GPUs with 8-12 GB are normally enough ([GPU and CUDA](GPU-and-CUDA)) |
 | Answers cut off | Raise *Max answer length* |
 | The model ignores my project files | Project text is cut to about half the context. Reduce the files, or raise *Context length* ([Projects](Projects)) |
-| A second request waits | The server handles one generation at a time; others queue |
+| A second request waits | The server handles one generation at a time; other apps' API requests queue |
+| "An answer is still being written in ..." when I send a message | Only one answer runs at a time. Wait for it, or open the chat marked with the pulsing dot and press **Stop** (or **Esc**). You can browse other chats and projects meanwhile |
 | I want to stop an answer | The send button turns into **Stop** while an answer is being written (Ctrl+C in `airllm run`). The model stays loaded |
 
 ## Images and voice
