@@ -44,7 +44,7 @@ jobs:
           if ($issues | Where-Object Severity -eq 'Error') { throw 'PSScriptAnalyzer found errors' }
 
       - name: Python syntax
-        run: python3 -m py_compile packaging/tests/smoke_test.py
+        run: python3 -m py_compile packaging/tests/smoke_test.py scripts/check-wiki.py
 
       - name: Version script self-test
         run: |
