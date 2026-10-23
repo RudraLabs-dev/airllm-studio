@@ -49,6 +49,33 @@ def test_cli_parser_and_helpers():
     assert table([["a", "1"]], ["NAME", "N"]).splitlines()[1].startswith("a")
 
 
+def test_run_pulls_a_missing_model_first(monkeypatch, capsys):
+    """`airllm run <model>` on a model that is not installed pulls it, then answers (it used to crash)."""
+    from airllm_studio import cli
+
+    calls = []
+
+    class FakeClient:
+        url = "http://127.0.0.1:11435"
+
+        def get(self, path, *args, **kwargs):
+            return {"models": []}
+
+        def stream(self, path, body):
+            calls.append((path, dict(body)))
+            if path == "/api/pull":
+                yield {"status": "success"}
+            else:
+                yield {"message": {"content": "hi there"}, "done": True}
+
+    monkeypatch.setattr(cli, "ensure_server", lambda *args, **kwargs: FakeClient())
+    args = build_parser().parse_args(["run", "org/model", "hello"])
+    assert cli.cmd_run(args) == 0
+    assert [path for path, _ in calls] == ["/api/pull", "/api/chat"]
+    assert calls[0][1] == {"model": "org/model"}      # no custom-code permission is granted implicitly
+    assert "hi there" in capsys.readouterr().out
+
+
 def test_long_chats_drop_old_turns_but_keep_system_and_latest(studio):
     """Too long a history loses its oldest turns, never the system prompt (project files) or the question."""
     np = pytest.importorskip("numpy")
